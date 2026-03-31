@@ -7,8 +7,26 @@ import tempfile
 from pathlib import Path
 
 
-def ensure_private_dir(path: Path, mode: int = 0o700) -> None:
+def ensure_private_dir(path: Path, mode: int = 0o700, root: Path | None = None) -> None:
     path = Path(path)
+
+    if root is not None:
+        root = Path(root)
+        try:
+            relative = path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"{path} is not under {root}") from exc
+
+        root.mkdir(parents=True, exist_ok=True)
+        os.chmod(root, mode)
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if not current.exists():
+                current.mkdir(exist_ok=True)
+            os.chmod(current, mode)
+        return
+
     missing: list[Path] = []
     current = path
     while not current.exists():
