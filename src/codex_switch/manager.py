@@ -95,7 +95,12 @@ class CodexSwitchManager:
             backup_path.unlink(missing_ok=True)
             raise
 
-    def _restore_previous_live_auth(self, previous_state: AppState, backup_path: Path | None) -> None:
+    def _restore_previous_live_auth(
+        self,
+        previous_state: AppState,
+        backup_path: Path | None,
+        clear_unmanaged_live_auth: bool,
+    ) -> None:
         if (
             previous_state.active_alias is not None
             and self._accounts.exists(previous_state.active_alias)
@@ -120,7 +125,7 @@ class CodexSwitchManager:
             backup_path.unlink(missing_ok=True)
             return
 
-        if self._paths.live_auth_file.exists():
+        if clear_unmanaged_live_auth and self._paths.live_auth_file.exists():
             self._paths.live_auth_file.unlink()
 
     def add(self, alias: str) -> None:
@@ -129,10 +134,12 @@ class CodexSwitchManager:
         previous_state = self._state.load()
         backup_path: Path | None = None
         primary_error: Exception | None = None
+        clear_unmanaged_live_auth = False
 
         try:
             self._sync_active_snapshot_from_live_auth(previous_state)
             backup_path = self._backup_live_auth()
+            clear_unmanaged_live_auth = True
             self._login_runner()
             if not self._paths.live_auth_file.exists():
                 raise LoginCaptureError("codex login did not leave ~/.codex/auth.json behind")
@@ -142,7 +149,11 @@ class CodexSwitchManager:
 
         cleanup_errors: list[Exception] = []
         try:
-            self._restore_previous_live_auth(previous_state, backup_path)
+            self._restore_previous_live_auth(
+                previous_state,
+                backup_path,
+                clear_unmanaged_live_auth,
+            )
         except Exception as exc:
             cleanup_errors.append(exc)
         try:

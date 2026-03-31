@@ -122,7 +122,7 @@ def test_add_preserves_login_failure_when_restore_also_fails(tmp_path, monkeypat
     paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
     paths.live_auth_file.write_bytes(b'{"token":"live-before-login"}')
 
-    def fail_restore(_previous_state, _backup_path):
+    def fail_restore(_previous_state, _backup_path, _clear_unmanaged_live_auth):
         raise RuntimeError("restore failed")
 
     monkeypatch.setattr(manager, "_restore_previous_live_auth", fail_restore)
@@ -135,3 +135,24 @@ def test_add_preserves_login_failure_when_restore_also_fails(tmp_path, monkeypat
 
     assert guard.calls == 1
     assert exc_info.value.__notes__ == ["Cleanup failed: restore failed"]
+
+
+def test_add_preserves_live_auth_when_backup_creation_fails(tmp_path, monkeypatch):
+    manager, paths, accounts, state, guard = make_manager(tmp_path, lambda: None)
+    state.save(AppState(active_alias=None, updated_at="2026-03-31T12:00:00Z"))
+    paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.live_auth_file.write_bytes(b'{"token":"live-before-backup"}')
+
+    def fail_backup():
+        raise OSError("backup failed")
+
+    monkeypatch.setattr(manager, "_backup_live_auth", fail_backup)
+
+    with pytest.raises(OSError, match="backup failed"):
+        manager.add("personal")
+
+    assert guard.calls == 1
+    assert paths.live_auth_file.read_bytes() == b'{"token":"live-before-backup"}'
+    assert state.load() == AppState(active_alias=None, updated_at="2026-03-31T12:00:00Z")
+    assert not accounts.exists("personal")
+    assert sorted(path.name for path in paths.live_auth_file.parent.iterdir()) == ["auth.json"]
