@@ -20,6 +20,23 @@ class AccountStore:
     def _root(self) -> Path:
         return self._accounts_dir.parent
 
+    def _safe_accounts_dir(self) -> Path:
+        root = self._root()
+        if root.exists() and root.is_symlink():
+            raise ValueError(f"{root} is a symlink")
+        try:
+            self._accounts_dir.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"{self._accounts_dir} is not under {root}") from exc
+
+        resolved_root = root.resolve(strict=False)
+        resolved_path = self._accounts_dir.resolve(strict=False)
+        if not resolved_path.is_relative_to(resolved_root):
+            raise ValueError(f"{self._accounts_dir} escapes {root} via symlink")
+        if self._accounts_dir.exists() and self._accounts_dir.is_symlink():
+            raise ValueError(f"{self._accounts_dir} is a symlink")
+        return self._accounts_dir
+
     def _validate_alias(self, alias: str) -> None:
         if not ALIAS_RE.fullmatch(alias):
             raise InvalidAliasError(
@@ -28,16 +45,17 @@ class AccountStore:
 
     def snapshot_path(self, alias: str) -> Path:
         self._validate_alias(alias)
-        return self._accounts_dir / f"{alias}.json"
+        return self._safe_accounts_dir() / f"{alias}.json"
 
     def exists(self, alias: str) -> bool:
         return self.snapshot_path(alias).exists()
 
     def list_aliases(self) -> list[str]:
-        if not self._accounts_dir.exists():
+        accounts_dir = self._safe_accounts_dir()
+        if not accounts_dir.exists():
             return []
         aliases: list[str] = []
-        for path in sorted(self._accounts_dir.glob("*.json")):
+        for path in sorted(accounts_dir.glob("*.json")):
             alias = path.stem
             if not ALIAS_RE.fullmatch(alias):
                 raise InvalidAliasError(f"Malformed snapshot filename: {path.name}")
@@ -47,13 +65,13 @@ class AccountStore:
     def write_snapshot_from_file(self, alias: str, source: Path) -> None:
         target = self.snapshot_path(alias)
         root = self._root()
-        ensure_private_dir(self._accounts_dir, root=root)
+        ensure_private_dir(self._safe_accounts_dir(), root=root)
         atomic_copy_file(source, target, mode=0o600, root=root)
 
     def write_snapshot_from_bytes(self, alias: str, payload: bytes) -> None:
         target = self.snapshot_path(alias)
         root = self._root()
-        ensure_private_dir(self._accounts_dir, root=root)
+        ensure_private_dir(self._safe_accounts_dir(), root=root)
         atomic_write_bytes(target, payload, mode=0o600, root=root)
 
     def read_snapshot(self, alias: str) -> bytes:
