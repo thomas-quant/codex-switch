@@ -42,22 +42,23 @@ def build_default_manager() -> CodexSwitchManager:
 def format_alias_lines(aliases: list[str], active_alias: str | None) -> list[str]:
     if not aliases:
         return ["No aliases configured."]
-    return [f"* {alias}" if alias == active_alias else alias for alias in aliases]
+    return [f"* {alias}" if alias == active_alias else f"  {alias}" for alias in aliases]
 
 
 def format_status_lines(status: StatusResult) -> list[str]:
-    sync_state = "unknown"
     if status.in_sync is True:
-        sync_state = "yes"
+        sync_state = "clean"
     elif status.in_sync is False:
-        sync_state = "no (dirty)"
+        sync_state = "dirty"
+    else:
+        sync_state = "unknown"
 
-    active_alias = status.active_alias if status.active_alias is not None else "(none)"
+    active_alias = status.active_alias if status.active_alias is not None else "none"
     return [
-        f"Active alias: {active_alias}",
-        f"Snapshot exists: {'yes' if status.snapshot_exists else 'no'}",
-        f"Live auth file exists: {'yes' if status.live_auth_exists else 'no'}",
-        f"Snapshot matches live auth: {sync_state}",
+        f"active alias: {active_alias}",
+        f"snapshot: {'present' if status.snapshot_exists else 'missing'}",
+        f"live auth: {'present' if status.live_auth_exists else 'missing'}",
+        f"sync: {sync_state}",
     ]
 
 
@@ -69,13 +70,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "add":
             manager.add(args.alias)
+            print(f"added alias: {args.alias}")
         elif args.command == "use":
             manager.use(args.alias)
+            print(f"active alias: {args.alias}")
         elif args.command == "list":
             aliases, active_alias = manager.list_aliases()
             print(*format_alias_lines(aliases, active_alias), sep="\n")
         elif args.command == "remove":
             manager.remove(args.alias)
+            print(f"removed alias: {args.alias}")
         elif args.command == "status":
             print(*format_status_lines(manager.status()), sep="\n")
         else:

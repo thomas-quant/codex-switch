@@ -42,7 +42,7 @@ def test_build_parser_list_takes_no_alias_argument():
 
 def test_format_alias_lines_marks_active_alias():
     assert format_alias_lines(["personal", "work"], "work") == [
-        "personal",
+        "  personal",
         "* work",
     ]
 
@@ -60,10 +60,10 @@ def test_format_status_lines_marks_dirty_state():
     )
 
     assert format_status_lines(status) == [
-        "Active alias: work",
-        "Snapshot exists: yes",
-        "Live auth file exists: yes",
-        "Snapshot matches live auth: no (dirty)",
+        "active alias: work",
+        "snapshot: present",
+        "live auth: present",
+        "sync: dirty",
     ]
 
 
@@ -81,7 +81,24 @@ def test_main_dispatches_add(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert result == 0
     assert calls == [("add", "work")]
-    assert captured.out == ""
+    assert captured.out == "added alias: work\n"
+
+
+def test_main_dispatches_use(monkeypatch, capsys):
+    calls: list[tuple[str, str | None]] = []
+
+    class FakeManager:
+        def use(self, alias: str) -> None:
+            calls.append(("use", alias))
+
+    monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
+
+    result = main(["use", "work"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls == [("use", "work")]
+    assert captured.out == "active alias: work\n"
 
 
 def test_main_dispatches_list(monkeypatch, capsys):
@@ -95,7 +112,24 @@ def test_main_dispatches_list(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert result == 0
-    assert captured.out.splitlines() == ["personal", "* work"]
+    assert captured.out.splitlines() == ["  personal", "* work"]
+
+
+def test_main_dispatches_remove(monkeypatch, capsys):
+    calls: list[tuple[str, str | None]] = []
+
+    class FakeManager:
+        def remove(self, alias: str) -> None:
+            calls.append(("remove", alias))
+
+    monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
+
+    result = main(["remove", "work"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls == [("remove", "work")]
+    assert captured.out == "removed alias: work\n"
 
 
 def test_main_exits_via_parser_for_user_facing_errors(monkeypatch):
