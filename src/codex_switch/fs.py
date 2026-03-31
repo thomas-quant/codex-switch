@@ -72,8 +72,13 @@ def _fsync_directory(path: Path) -> None:
         os.close(dir_fd)
 
 
-def atomic_write_bytes(target: Path, data: bytes, mode: int = 0o600) -> None:
-    ensure_private_dir(target.parent)
+def atomic_write_bytes(
+    target: Path,
+    data: bytes,
+    mode: int = 0o600,
+    root: Path | None = None,
+) -> None:
+    ensure_private_dir(target.parent, root=root)
     temp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as handle:
@@ -90,8 +95,13 @@ def atomic_write_bytes(target: Path, data: bytes, mode: int = 0o600) -> None:
     _fsync_directory(target.parent)
 
 
-def atomic_copy_file(source: Path, target: Path, mode: int = 0o600) -> None:
-    atomic_write_bytes(target, source.read_bytes(), mode=mode)
+def atomic_copy_file(
+    source: Path,
+    target: Path,
+    mode: int = 0o600,
+    root: Path | None = None,
+) -> None:
+    atomic_write_bytes(target, source.read_bytes(), mode=mode, root=root)
 
 
 def file_digest(path: Path) -> str | None:

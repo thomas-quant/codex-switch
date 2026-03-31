@@ -55,7 +55,7 @@ def test_state_store_rejects_corrupt_state_with_state_file_error(tmp_path, paylo
     paths.state_file.write_bytes(payload)
     store = StateStore(paths.state_file)
 
-    with pytest.raises(StateFileError):
+    with pytest.raises(StateFileError, match="Could not parse .*"):
         store.load()
 
 
@@ -65,7 +65,7 @@ def test_state_store_rejects_syntactically_malformed_json_text(tmp_path):
     paths.state_file.write_text("{not json")
     store = StateStore(paths.state_file)
 
-    with pytest.raises(StateFileError):
+    with pytest.raises(StateFileError, match=r"Could not parse .*: .*Expecting property name enclosed in double quotes"):
         store.load()
 
 
@@ -80,7 +80,35 @@ def test_state_store_reports_read_failures_separately(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
 
-    with pytest.raises(StateFileError, match="Could not read"):
+    with pytest.raises(StateFileError, match=r"Could not read .*: .*read failed"):
+        store.load()
+
+
+def test_state_store_rejects_non_dict_json_with_specific_message(tmp_path):
+    paths = resolve_paths(tmp_path)
+    paths.state_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.state_file.write_text("[]")
+    store = StateStore(paths.state_file)
+
+    with pytest.raises(StateFileError, match=r"Could not parse .*: expected a JSON object"):
+        store.load()
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        (json.dumps({"version": "1"}), r"version must be an integer"),
+        (json.dumps({"active_alias": ["work-1"]}), r"active_alias must be a string or null"),
+        (json.dumps({"updated_at": 123}), r"updated_at must be a string or null"),
+    ],
+)
+def test_state_store_reports_shape_errors_with_specific_messages(tmp_path, payload, message):
+    paths = resolve_paths(tmp_path)
+    paths.state_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.state_file.write_text(payload)
+    store = StateStore(paths.state_file)
+
+    with pytest.raises(StateFileError, match=message):
         store.load()
 
 
@@ -107,6 +135,21 @@ def test_ensure_private_dir_with_root_secures_existing_ancestors(tmp_path):
     assert oct(app_root.stat().st_mode & 0o777) == "0o700"
     assert oct(permissive_parent.stat().st_mode & 0o777) == "0o700"
     assert oct(nested.stat().st_mode & 0o777) == "0o700"
+
+
+def test_atomic_write_bytes_with_root_secures_existing_ancestor(tmp_path):
+    app_root = tmp_path / "app"
+    permissive_parent = app_root / "cache"
+    target = permissive_parent / "state.json"
+    permissive_parent.mkdir(parents=True)
+    app_root.chmod(0o755)
+    permissive_parent.chmod(0o755)
+
+    fs.atomic_write_bytes(target, b"hello", root=app_root)
+
+    assert oct(app_root.stat().st_mode & 0o777) == "0o700"
+    assert oct(permissive_parent.stat().st_mode & 0o777) == "0o700"
+    assert target.read_bytes() == b"hello"
 
 
 def test_atomic_write_bytes_flushes_syncs_and_cleans_up_on_failure(tmp_path, monkeypatch):
@@ -208,7 +251,7 @@ def test_atomic_copy_file_and_file_digest(tmp_path):
     target = tmp_path / "nested" / "copy.json"
     source.write_bytes(b"hello")
 
-    fs.atomic_copy_file(source, target)
+    fs.atomic_copy_file(source, target, root=tmp_path)
 
     assert target.read_bytes() == b"hello"
     assert fs.file_digest(target) == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
