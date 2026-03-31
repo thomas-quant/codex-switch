@@ -11,7 +11,7 @@ The tool is intentionally narrow:
 ## Install
 
 ```bash
-python3 -m pip install .
+python3 -m pip install -e '.[dev]'
 ```
 
 ## Commands
