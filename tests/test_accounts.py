@@ -73,3 +73,28 @@ def test_list_aliases_rejects_malformed_snapshot_names(tmp_path):
 
     with pytest.raises(InvalidAliasError):
         store.list_aliases()
+
+
+def test_symlinked_accounts_directory_rejects_all_operations(tmp_path):
+    switch_root = tmp_path / ".codex-switch"
+    external_accounts = tmp_path / "outside"
+    external_accounts.mkdir()
+    (external_accounts / "work-1.json").write_text('{"token":"abc"}')
+    switch_root.mkdir()
+    (switch_root / "accounts").symlink_to(external_accounts, target_is_directory=True)
+
+    store = AccountStore(switch_root / "accounts")
+
+    with pytest.raises(ValueError):
+        store.list_aliases()
+
+    with pytest.raises(ValueError):
+        store.exists("work-1")
+
+    with pytest.raises(ValueError):
+        store.read_snapshot("work-1")
+
+    with pytest.raises(ValueError):
+        store.delete("work-1")
+
+    assert (external_accounts / "work-1.json").exists()
