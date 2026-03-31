@@ -134,6 +134,7 @@ class CodexSwitchManager:
         previous_state = self._state.load()
         backup_path: Path | None = None
         primary_error: Exception | None = None
+        alias_captured = False
         clear_unmanaged_live_auth = False
 
         try:
@@ -144,6 +145,7 @@ class CodexSwitchManager:
             if not self._paths.live_auth_file.exists():
                 raise LoginCaptureError("codex login did not leave ~/.codex/auth.json behind")
             self._accounts.write_snapshot_from_file(alias, self._paths.live_auth_file)
+            alias_captured = True
         except Exception as exc:
             primary_error = exc
 
@@ -160,6 +162,11 @@ class CodexSwitchManager:
             self._state.save(previous_state)
         except Exception as exc:
             cleanup_errors.append(exc)
+        if cleanup_errors and alias_captured and self._accounts.exists(alias):
+            try:
+                self._accounts.delete(alias)
+            except Exception as exc:
+                cleanup_errors.append(exc)
 
         if primary_error is not None:
             for cleanup_error in cleanup_errors:
