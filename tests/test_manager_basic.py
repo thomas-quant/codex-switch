@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from codex_switch.accounts import AccountStore
-from codex_switch.errors import ActiveAliasRemovalError
+from codex_switch.errors import ActiveAliasRemovalError, SnapshotNotFoundError
 from codex_switch.manager import CodexSwitchManager
 from codex_switch.models import AppState, StatusResult
 from codex_switch.paths import resolve_paths
@@ -48,6 +48,22 @@ def test_use_syncs_current_alias_before_switching(tmp_path):
     assert paths.live_auth_file.read_bytes() == b'{"token":"personal"}'
     assert state.load().active_alias == "personal"
     assert state.load().updated_at is not None
+
+
+def test_use_missing_alias_does_not_mutate_current_snapshot(tmp_path):
+    manager, paths, accounts, state, guard = make_manager(tmp_path)
+    accounts.write_snapshot_from_bytes("work", b'{"token":"snapshot-work"}')
+    state.save(AppState(active_alias="work", updated_at="2026-03-31T12:00:00Z"))
+    paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.live_auth_file.write_bytes(b'{"token":"live-work"}')
+
+    with pytest.raises(SnapshotNotFoundError, match="Alias 'missing' does not exist"):
+        manager.use("missing")
+
+    assert guard.calls == 1
+    assert accounts.read_snapshot("work") == b'{"token":"snapshot-work"}'
+    assert paths.live_auth_file.read_bytes() == b'{"token":"live-work"}'
+    assert state.load() == AppState(active_alias="work", updated_at="2026-03-31T12:00:00Z")
 
 
 def test_status_reports_dirty_live_auth(tmp_path):

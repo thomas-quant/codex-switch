@@ -59,6 +59,7 @@ class CodexSwitchManager:
     def use(self, alias: str) -> None:
         self._ensure_safe_to_mutate()
         current = self._state.load()
+        target_snapshot = self._accounts.read_snapshot(alias)
 
         if (
             current.active_alias is not None
@@ -74,7 +75,7 @@ class CodexSwitchManager:
 
         atomic_write_bytes(
             self._paths.live_auth_file,
-            self._accounts.read_snapshot(alias),
+            target_snapshot,
             mode=0o600,
             root=self._paths.codex_root,
         )
