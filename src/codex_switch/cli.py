@@ -3,6 +3,13 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
+from codex_switch.accounts import AccountStore
+from codex_switch.errors import CodexSwitchError
+from codex_switch.manager import CodexSwitchManager
+from codex_switch.models import StatusResult
+from codex_switch.paths import resolve_paths
+from codex_switch.state import StateStore
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-switch")
@@ -16,9 +23,66 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_default_manager() -> CodexSwitchManager:
+    from codex_switch.codex_login import run_codex_login
+    from codex_switch.process_guard import ensure_codex_not_running
+
+    paths = resolve_paths()
+    accounts = AccountStore(paths.accounts_dir)
+    state = StateStore(paths.state_file)
+    return CodexSwitchManager(
+        paths=paths,
+        accounts=accounts,
+        state=state,
+        ensure_safe_to_mutate=ensure_codex_not_running,
+        login_runner=run_codex_login,
+    )
+
+
+def format_alias_lines(aliases: list[str], active_alias: str | None) -> list[str]:
+    if not aliases:
+        return ["No aliases configured."]
+    return [f"* {alias}" if alias == active_alias else alias for alias in aliases]
+
+
+def format_status_lines(status: StatusResult) -> list[str]:
+    sync_state = "unknown"
+    if status.in_sync is True:
+        sync_state = "yes"
+    elif status.in_sync is False:
+        sync_state = "no (dirty)"
+
+    active_alias = status.active_alias if status.active_alias is not None else "(none)"
+    return [
+        f"Active alias: {active_alias}",
+        f"Snapshot exists: {'yes' if status.snapshot_exists else 'no'}",
+        f"Live auth file exists: {'yes' if status.live_auth_exists else 'no'}",
+        f"Snapshot matches live auth: {sync_state}",
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    parser.parse_args(list(argv) if argv is not None else None)
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    manager = build_default_manager()
+
+    try:
+        if args.command == "add":
+            manager.add(args.alias)
+        elif args.command == "use":
+            manager.use(args.alias)
+        elif args.command == "list":
+            aliases, active_alias = manager.list_aliases()
+            print(*format_alias_lines(aliases, active_alias), sep="\n")
+        elif args.command == "remove":
+            manager.remove(args.alias)
+        elif args.command == "status":
+            print(*format_status_lines(manager.status()), sep="\n")
+        else:
+            parser.error(f"unknown command: {args.command}")
+    except CodexSwitchError as exc:
+        parser.exit(1, f"{parser.prog}: error: {exc}\n")
+
     return 0
 
 
