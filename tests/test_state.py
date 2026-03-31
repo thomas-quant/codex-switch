@@ -2,6 +2,7 @@ import errno
 import json
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -68,6 +69,21 @@ def test_state_store_rejects_syntactically_malformed_json_text(tmp_path):
         store.load()
 
 
+def test_state_store_reports_read_failures_separately(tmp_path, monkeypatch):
+    paths = resolve_paths(tmp_path)
+    paths.state_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.state_file.write_text("{}")
+    store = StateStore(paths.state_file)
+
+    def failing_read_bytes(self):
+        raise OSError(errno.EIO, "read failed")
+
+    monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
+
+    with pytest.raises(StateFileError, match="Could not read"):
+        store.load()
+
+
 def test_ensure_private_dir_applies_private_permissions_to_nested_paths(tmp_path):
     nested = tmp_path / "outer" / "inner"
 
@@ -75,6 +91,21 @@ def test_ensure_private_dir_applies_private_permissions_to_nested_paths(tmp_path
 
     assert nested.exists()
     assert oct((tmp_path / "outer").stat().st_mode & 0o777) == "0o700"
+    assert oct(nested.stat().st_mode & 0o777) == "0o700"
+
+
+def test_ensure_private_dir_with_root_secures_existing_ancestors(tmp_path):
+    app_root = tmp_path / "app"
+    permissive_parent = app_root / "cache"
+    nested = permissive_parent / "state"
+    permissive_parent.mkdir(parents=True)
+    app_root.chmod(0o755)
+    permissive_parent.chmod(0o755)
+
+    fs.ensure_private_dir(nested, root=app_root)
+
+    assert oct(app_root.stat().st_mode & 0o777) == "0o700"
+    assert oct(permissive_parent.stat().st_mode & 0o777) == "0o700"
     assert oct(nested.stat().st_mode & 0o777) == "0o700"
 
 
@@ -170,3 +201,15 @@ def test_atomic_write_bytes_ignores_unsupported_directory_fsync(tmp_path, monkey
     fs.atomic_write_bytes(target, b"hello")
 
     assert target.read_bytes() == b"hello"
+
+
+def test_atomic_copy_file_and_file_digest(tmp_path):
+    source = tmp_path / "source.json"
+    target = tmp_path / "nested" / "copy.json"
+    source.write_bytes(b"hello")
+
+    fs.atomic_copy_file(source, target)
+
+    assert target.read_bytes() == b"hello"
+    assert fs.file_digest(target) == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    assert fs.file_digest(tmp_path / "missing.json") is None

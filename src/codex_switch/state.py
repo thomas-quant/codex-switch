@@ -19,11 +19,12 @@ class StateStore:
 
         try:
             raw = self._state_file.read_bytes()
+        except OSError as exc:
+            raise StateFileError(f"Could not read {self._state_file}") from exc
+        try:
             text = raw.decode("utf-8")
             payload = json.loads(text)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise StateFileError(f"Could not parse {self._state_file}") from exc
-        except OSError as exc:
             raise StateFileError(f"Could not parse {self._state_file}") from exc
 
         if not isinstance(payload, dict):
