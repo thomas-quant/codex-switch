@@ -38,6 +38,8 @@ def make_snapshot(
 def test_should_trigger_soft_switch_at_threshold_boundary() -> None:
     assert should_trigger_soft_switch(make_snapshot("work", 95, 10), 95) is True
     assert should_trigger_soft_switch(make_snapshot("work", 94, 10), 95) is False
+    assert should_trigger_soft_switch(make_snapshot("work", 10, 95), 95) is True
+    assert should_trigger_soft_switch(make_snapshot("work", 10, 94), 95) is False
 
 
 def test_choose_target_alias_ranks_primary_then_secondary_for_mixed_limit_states() -> None:
@@ -50,13 +52,14 @@ def test_choose_target_alias_ranks_primary_then_secondary_for_mixed_limit_states
     assert choose_target_alias("work", candidates, 95) == "beta"
 
 
-def test_choose_target_alias_keeps_missing_secondary_window_eligible() -> None:
+def test_choose_target_alias_rejects_candidates_with_partial_telemetry() -> None:
     candidates = [
         make_snapshot("work", 5, 5),
         make_snapshot("alpha", 10, None),
+        make_snapshot("beta", 20, 15),
     ]
 
-    assert choose_target_alias("work", candidates, 95) == "alpha"
+    assert choose_target_alias("work", candidates, 95) == "beta"
 
 
 def test_choose_target_alias_uses_earliest_reset_time_when_all_aliases_near_exhaustion() -> None:
@@ -80,10 +83,52 @@ def test_choose_target_alias_uses_earliest_reset_time_when_all_aliases_near_exha
     assert choose_target_alias("work", candidates, 95) == "beta"
 
 
-def test_choose_target_alias_returns_none_when_all_candidate_telemetry_is_unknown() -> None:
+def test_choose_target_alias_skips_unparseable_reset_data_in_near_exhaustion_tiebreak() -> None:
     candidates = [
-        make_snapshot("alpha", None, None),
-        make_snapshot("beta", None, None),
+        make_snapshot(
+            "alpha",
+            98,
+            99,
+            primary_resets_at="not-an-iso-timestamp",
+            secondary_resets_at=None,
+        ),
+        make_snapshot(
+            "beta",
+            98,
+            99,
+            primary_resets_at="2026-04-05T00:00:00Z",
+            secondary_resets_at=None,
+        ),
+    ]
+
+    assert choose_target_alias("work", candidates, 95) == "beta"
+
+
+def test_choose_target_alias_ignores_reset_time_when_aliases_are_not_near_exhaustion() -> None:
+    candidates = [
+        make_snapshot(
+            "alpha",
+            40,
+            40,
+            primary_resets_at="2026-04-07T00:00:00Z",
+            secondary_resets_at="2026-04-08T00:00:00Z",
+        ),
+        make_snapshot(
+            "beta",
+            40,
+            40,
+            primary_resets_at="2026-04-05T00:00:00Z",
+            secondary_resets_at="2026-04-06T00:00:00Z",
+        ),
+    ]
+
+    assert choose_target_alias("work", candidates, 95) == "alpha"
+
+
+def test_choose_target_alias_returns_none_when_all_candidate_telemetry_is_partial_or_unknown() -> None:
+    candidates = [
+        make_snapshot("alpha", 25, None),
+        make_snapshot("beta", None, 30),
     ]
 
     assert choose_target_alias("work", candidates, 95) is None
