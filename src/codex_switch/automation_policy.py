@@ -26,6 +26,8 @@ def choose_target_alias(
     for snapshot in candidates:
         if snapshot.alias == active_alias:
             continue
+        if not _has_usable_telemetry(snapshot):
+            continue
 
         score = _score_snapshot(snapshot, threshold)
 
@@ -56,6 +58,16 @@ def _score_snapshot(
         _used_percent_rank(secondary_used_percent),
         _reset_rank(snapshot),
         snapshot.alias,
+    )
+
+
+def _has_usable_telemetry(snapshot: RateLimitSnapshot) -> bool:
+    return any(
+        used_percent is not None
+        for used_percent in (
+            snapshot.primary_window.used_percent,
+            snapshot.secondary_window.used_percent,
+        )
     )
 
 
