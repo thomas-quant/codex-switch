@@ -119,6 +119,125 @@ def test_store_updates_rate_limit_in_place_for_same_key(tmp_path):
     assert rows[0].credits_balance == "1.00"
 
 
+def test_initialize_migrates_rate_limit_credits_balance_to_text(tmp_path):
+    paths = resolve_paths(tmp_path)
+    paths.switch_root.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(paths.automation_db_file) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO metadata (key, value) VALUES ('schema_version', '1');
+
+            CREATE TABLE rate_limits (
+                alias TEXT NOT NULL,
+                limit_id TEXT,
+                limit_id_key TEXT NOT NULL,
+                limit_name TEXT NOT NULL,
+                observed_via TEXT NOT NULL,
+                plan_type TEXT,
+                primary_used_percent REAL,
+                primary_resets_at TEXT,
+                primary_window_duration_mins INTEGER,
+                secondary_used_percent REAL,
+                secondary_resets_at TEXT,
+                secondary_window_duration_mins INTEGER,
+                credits_has_credits INTEGER,
+                credits_unlimited INTEGER,
+                credits_balance INTEGER,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY (alias, limit_id_key)
+            );
+
+            INSERT INTO rate_limits (
+                alias,
+                limit_id,
+                limit_id_key,
+                limit_name,
+                observed_via,
+                plan_type,
+                primary_used_percent,
+                primary_resets_at,
+                primary_window_duration_mins,
+                secondary_used_percent,
+                secondary_resets_at,
+                secondary_window_duration_mins,
+                credits_has_credits,
+                credits_unlimited,
+                credits_balance,
+                observed_at
+            ) VALUES (
+                'work',
+                NULL,
+                'null',
+                'Daily limit',
+                'PTY',
+                'pro',
+                42,
+                '2026-04-04T00:00:00Z',
+                60,
+                91,
+                '2026-04-05T00:00:00Z',
+                10080,
+                1,
+                0,
+                5.25,
+                '2026-04-04T00:00:00Z'
+            );
+            """
+        )
+
+    store = AutomationStore(paths.automation_db_file)
+    store.initialize()
+    store.upsert_rate_limit(
+        RateLimitSnapshot(
+            alias="work",
+            limit_id=None,
+            limit_name="Daily limit",
+            observed_via=UsageSource.PTY,
+            plan_type="pro",
+            primary_window=RateLimitWindow(
+                used_percent=43,
+                resets_at="2026-04-04T01:00:00Z",
+                window_duration_mins=60,
+            ),
+            secondary_window=RateLimitWindow(
+                used_percent=92,
+                resets_at="2026-04-05T01:00:00Z",
+                window_duration_mins=10080,
+            ),
+            credits_has_credits=True,
+            credits_unlimited=False,
+            credits_balance="7.50",
+            observed_at="2026-04-04T01:00:00Z",
+        )
+    )
+
+    rows = store.list_rate_limits_for_alias("work")
+    assert len(rows) == 1
+    assert rows[0].credits_balance == "7.50"
+
+    with sqlite3.connect(paths.automation_db_file) as conn:
+        column_types = {
+            row[1]: row[2]
+            for row in conn.execute("PRAGMA table_info(rate_limits)").fetchall()
+        }
+        stored_credit = conn.execute(
+            "SELECT credits_balance, typeof(credits_balance) FROM rate_limits WHERE alias = ?",
+            ("work",),
+        ).fetchone()
+        schema_version = conn.execute(
+            "SELECT value FROM metadata WHERE key = ?",
+            ("schema_version",),
+        ).fetchone()[0]
+
+    assert column_types["credits_balance"] == "TEXT"
+    assert stored_credit == ("7.50", "text")
+    assert schema_version == "2"
+
+
 def test_store_persists_handoff_state(tmp_path):
     paths = resolve_paths(tmp_path)
     store = AutomationStore(paths.automation_db_file)

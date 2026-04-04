@@ -10,8 +10,35 @@ from codex_switch.automation_models import HandoffPhase, RateLimitSnapshot, Usag
 from codex_switch.errors import AutomationDatabaseError
 from codex_switch.fs import ensure_private_dir
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _HANDOFF_STATE_KEY = 1
+
+_RATE_LIMITS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS rate_limits (
+    alias TEXT NOT NULL,
+    limit_id TEXT,
+    limit_id_key TEXT NOT NULL,
+    limit_name TEXT NOT NULL,
+    observed_via TEXT NOT NULL,
+    plan_type TEXT,
+    primary_used_percent REAL,
+    primary_resets_at TEXT,
+    primary_window_duration_mins INTEGER,
+    secondary_used_percent REAL,
+    secondary_resets_at TEXT,
+    secondary_window_duration_mins INTEGER,
+    credits_has_credits INTEGER,
+    credits_unlimited INTEGER,
+    credits_balance TEXT,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (alias, limit_id_key)
+);
+"""
+
+_RATE_LIMITS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_rate_limits_alias
+    ON rate_limits(alias);
+"""
 
 
 @dataclass(slots=True, frozen=True)
@@ -205,29 +232,6 @@ class AutomationStore:
                 value TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS rate_limits (
-                alias TEXT NOT NULL,
-                limit_id TEXT,
-                limit_id_key TEXT NOT NULL,
-                limit_name TEXT NOT NULL,
-                observed_via TEXT NOT NULL,
-                plan_type TEXT,
-                primary_used_percent REAL,
-                primary_resets_at TEXT,
-                primary_window_duration_mins INTEGER,
-                secondary_used_percent REAL,
-                secondary_resets_at TEXT,
-                secondary_window_duration_mins INTEGER,
-                credits_has_credits INTEGER,
-                credits_unlimited INTEGER,
-                credits_balance TEXT,
-                observed_at TEXT NOT NULL,
-                PRIMARY KEY (alias, limit_id_key)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_rate_limits_alias
-                ON rate_limits(alias);
-
             CREATE TABLE IF NOT EXISTS handoff_state (
                 singleton_key INTEGER PRIMARY KEY CHECK (singleton_key = 1),
                 thread_id TEXT NOT NULL,
@@ -239,23 +243,112 @@ class AutomationStore:
             );
             """
         )
+        conn.executescript(_RATE_LIMITS_CREATE_SQL)
+        self._ensure_rate_limits_index(conn)
+
+        version = self._read_schema_version(conn)
+        if version is None:
+            self._set_schema_version(conn, SCHEMA_VERSION)
+            return
+        if version > SCHEMA_VERSION:
+            raise AutomationDatabaseError(
+                f"Unsupported automation schema version {version}; expected {SCHEMA_VERSION}"
+            )
+
+        if version < SCHEMA_VERSION or self._rate_limits_credits_balance_declared_type(conn) != "TEXT":
+            self._migrate_rate_limits_credits_balance_to_text(conn)
+
+        self._set_schema_version(conn, SCHEMA_VERSION)
+
+    def _read_schema_version(self, conn: sqlite3.Connection) -> int | None:
         row = conn.execute(
             "SELECT value FROM metadata WHERE key = ?",
             ("schema_version",),
         ).fetchone()
         if row is None:
-            conn.execute(
-                """
-                INSERT INTO metadata (key, value)
-                VALUES (?, ?)
-                """,
-                ("schema_version", str(SCHEMA_VERSION)),
-            )
-            return
-        if row["value"] != str(SCHEMA_VERSION):
+            return None
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError) as exc:
             raise AutomationDatabaseError(
-                f"Unsupported automation schema version {row['value']}; expected {SCHEMA_VERSION}"
+                f"Invalid automation schema version {row['value']!r}"
+            ) from exc
+
+    def _set_schema_version(self, conn: sqlite3.Connection, version: int) -> None:
+        conn.execute(
+            """
+            INSERT INTO metadata (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            ("schema_version", str(version)),
+        )
+
+    def _rate_limits_credits_balance_declared_type(self, conn: sqlite3.Connection) -> str | None:
+        row = conn.execute("PRAGMA table_info(rate_limits)").fetchall()
+        for column in row:
+            if column[1] == "credits_balance":
+                return column[2]
+        return None
+
+    def _ensure_rate_limits_index(self, conn: sqlite3.Connection) -> None:
+        conn.execute(_RATE_LIMITS_INDEX_SQL)
+
+    def _migrate_rate_limits_credits_balance_to_text(self, conn: sqlite3.Connection) -> None:
+        declared_type = self._rate_limits_credits_balance_declared_type(conn)
+        if declared_type is None:
+            conn.executescript(_RATE_LIMITS_CREATE_SQL)
+            self._ensure_rate_limits_index(conn)
+            return
+        if declared_type == "TEXT":
+            self._ensure_rate_limits_index(conn)
+            return
+
+        conn.execute("DROP INDEX IF EXISTS idx_rate_limits_alias")
+        conn.execute("ALTER TABLE rate_limits RENAME TO rate_limits_legacy")
+        conn.executescript(_RATE_LIMITS_CREATE_SQL)
+        conn.execute(
+            """
+            INSERT INTO rate_limits (
+                alias,
+                limit_id,
+                limit_id_key,
+                limit_name,
+                observed_via,
+                plan_type,
+                primary_used_percent,
+                primary_resets_at,
+                primary_window_duration_mins,
+                secondary_used_percent,
+                secondary_resets_at,
+                secondary_window_duration_mins,
+                credits_has_credits,
+                credits_unlimited,
+                credits_balance,
+                observed_at
             )
+            SELECT
+                alias,
+                limit_id,
+                limit_id_key,
+                limit_name,
+                observed_via,
+                plan_type,
+                primary_used_percent,
+                primary_resets_at,
+                primary_window_duration_mins,
+                secondary_used_percent,
+                secondary_resets_at,
+                secondary_window_duration_mins,
+                credits_has_credits,
+                credits_unlimited,
+                CAST(credits_balance AS TEXT),
+                observed_at
+            FROM rate_limits_legacy
+            """
+        )
+        conn.execute("DROP TABLE rate_limits_legacy")
+        self._ensure_rate_limits_index(conn)
 
 
 def _limit_key(limit_id: str | None) -> str:
