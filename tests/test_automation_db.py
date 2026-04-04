@@ -15,7 +15,7 @@ def test_store_creates_schema_and_records_rate_limit(tmp_path):
     store.upsert_rate_limit(
         RateLimitSnapshot(
             alias="work",
-            limit_id="daily",
+            limit_id=None,
             limit_name="Daily limit",
             observed_via=UsageSource.RPC,
             plan_type="pro",
@@ -40,6 +40,7 @@ def test_store_creates_schema_and_records_rate_limit(tmp_path):
 
     assert len(rows) == 1
     assert rows[0].alias == "work"
+    assert rows[0].limit_id is None
     assert rows[0].primary_used_percent == 42
     assert oct(paths.switch_root.stat().st_mode & 0o777) == "0o700"
     assert oct(paths.automation_db_file.stat().st_mode & 0o777) == "0o600"
