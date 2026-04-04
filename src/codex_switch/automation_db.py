@@ -11,6 +11,7 @@ from codex_switch.errors import AutomationDatabaseError
 from codex_switch.fs import ensure_private_dir
 
 SCHEMA_VERSION = 1
+_HANDOFF_STATE_KEY = 1
 
 
 @dataclass(slots=True, frozen=True)
@@ -39,7 +40,6 @@ class AutomationStore:
     def initialize(self) -> None:
         def initialize_schema(conn: sqlite3.Connection) -> None:
             self._ensure_schema(conn)
-            self._ensure_file_mode()
 
         self._run(initialize_schema)
 
@@ -100,7 +100,6 @@ class AutomationStore:
                     snapshot.observed_at,
                 ),
             )
-            self._ensure_file_mode()
 
         self._run(write_rate_limit)
 
@@ -147,38 +146,54 @@ class AutomationStore:
             conn.execute(
                 """
                 INSERT INTO handoff_state (
+                    singleton_key,
                     thread_id,
                     source_alias,
                     target_alias,
                     phase,
                     reason,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(thread_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(singleton_key) DO UPDATE SET
+                    thread_id = excluded.thread_id,
                     source_alias = excluded.source_alias,
                     target_alias = excluded.target_alias,
                     phase = excluded.phase,
                     reason = excluded.reason,
                     updated_at = excluded.updated_at
                 """,
-                (thread_id, source_alias, target_alias, phase.value, reason, updated_at),
+                (
+                    _HANDOFF_STATE_KEY,
+                    thread_id,
+                    source_alias,
+                    target_alias,
+                    phase.value,
+                    reason,
+                    updated_at,
+                ),
             )
-            self._ensure_file_mode()
 
         self._run(write_handoff_state)
 
     def _run(self, callback):
         try:
-            ensure_private_dir(self._db_file.parent, root=self._db_file.parent)
+            self._prepare_db_file()
             with sqlite3.connect(self._db_file) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA foreign_keys = ON")
                 self._ensure_schema(conn)
                 result = callback(conn)
-            self._ensure_file_mode()
             return result
         except (OSError, sqlite3.Error, ValueError) as exc:
             raise AutomationDatabaseError(f"Could not access {self._db_file}: {exc}") from exc
+
+    def _prepare_db_file(self) -> None:
+        ensure_private_dir(self._db_file.parent, root=self._db_file.parent)
+        if self._db_file.exists():
+            os.chmod(self._db_file, 0o600)
+            return
+        fd = os.open(self._db_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -212,7 +227,8 @@ class AutomationStore:
                 ON rate_limits(alias);
 
             CREATE TABLE IF NOT EXISTS handoff_state (
-                thread_id TEXT PRIMARY KEY,
+                singleton_key INTEGER PRIMARY KEY CHECK (singleton_key = 1),
+                thread_id TEXT NOT NULL,
                 source_alias TEXT,
                 target_alias TEXT,
                 phase TEXT NOT NULL,
@@ -238,10 +254,6 @@ class AutomationStore:
             raise AutomationDatabaseError(
                 f"Unsupported automation schema version {row['value']}; expected {SCHEMA_VERSION}"
             )
-
-    def _ensure_file_mode(self) -> None:
-        if self._db_file.exists():
-            os.chmod(self._db_file, 0o600)
 
 
 def _limit_key(limit_id: str | None) -> str:
