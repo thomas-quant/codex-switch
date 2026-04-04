@@ -33,11 +33,20 @@ def test_should_trigger_soft_switch_at_threshold_boundary() -> None:
     assert should_trigger_soft_switch(make_snapshot("work", 94, 10), 95) is False
 
 
-def test_choose_target_alias_prefers_lowest_eligible_usage_and_excludes_active_alias() -> None:
+def test_choose_target_alias_ranks_primary_then_secondary_for_mixed_limit_states() -> None:
     candidates = [
-        make_snapshot("work", 1, 2),
-        make_snapshot("alpha", 40, 80),
-        make_snapshot("beta", 20, 90),
+        make_snapshot("alpha", 40, 30),
+        make_snapshot("beta", 40, 20),
+        make_snapshot("gamma", 55, 10),
     ]
 
     assert choose_target_alias("work", candidates, 95) == "beta"
+
+
+def test_choose_target_alias_excludes_active_alias_even_if_it_scores_best() -> None:
+    candidates = [
+        make_snapshot("work", 10, 10),
+        make_snapshot("alpha", 20, 20),
+    ]
+
+    assert choose_target_alias("work", candidates, 95) == "alpha"
