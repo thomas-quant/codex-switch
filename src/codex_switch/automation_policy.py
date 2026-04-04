@@ -1,15 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import NamedTuple
 
 from codex_switch.automation_models import RateLimitSnapshot
-
-
-class _TargetScore(NamedTuple):
-    tier: int
-    used_percent: float
-    alias: str
 
 
 def should_trigger_soft_switch(snapshot: RateLimitSnapshot, threshold: float) -> bool:
@@ -27,7 +20,7 @@ def choose_target_alias(
     candidates: Iterable[RateLimitSnapshot],
     threshold: float,
 ) -> str | None:
-    best_score: _TargetScore | None = None
+    best_score: tuple[float, float, str] | None = None
 
     for snapshot in candidates:
         if snapshot.alias == active_alias:
@@ -42,16 +35,15 @@ def choose_target_alias(
 
     if best_score is None:
         return None
-    return best_score.alias
+    return best_score[2]
 
 
-def _score_snapshot(snapshot: RateLimitSnapshot, threshold: float) -> _TargetScore | None:
+def _score_snapshot(snapshot: RateLimitSnapshot, threshold: float) -> tuple[float, float, str] | None:
     primary_used_percent = snapshot.primary_window.used_percent
-    if primary_used_percent is not None and primary_used_percent < threshold:
-        return _TargetScore(0, primary_used_percent, snapshot.alias)
-
     secondary_used_percent = snapshot.secondary_window.used_percent
-    if secondary_used_percent is not None and secondary_used_percent < threshold:
-        return _TargetScore(1, secondary_used_percent, snapshot.alias)
+    if primary_used_percent is None or secondary_used_percent is None:
+        return None
+    if primary_used_percent >= threshold or secondary_used_percent >= threshold:
+        return None
 
-    return None
+    return (primary_used_percent, secondary_used_percent, snapshot.alias)
