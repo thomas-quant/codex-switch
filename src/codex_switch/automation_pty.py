@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 import re
 
-_CREDITS_RE = re.compile(r"^\s*Credits:\s*(?P<credits>\d+(?:\.\d+)?)\s*$", re.IGNORECASE | re.MULTILINE)
+_CREDITS_RE = re.compile(r"^\s*Credits:\s*(?P<credits>\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
 _PRIMARY_LIMIT_RE = re.compile(
-    r"^\s*5h limit:\s*(?P<used_percent>\d+)% used\b",
-    re.IGNORECASE | re.MULTILINE,
+    r"^\s*5h limit:\s*(?P<used_percent>\d+)% used,\s*resets in\s+(?P<resets_after>\S+)\s*$",
+    re.IGNORECASE,
 )
 _SECONDARY_LIMIT_RE = re.compile(
-    r"^\s*Weekly limit:\s*(?P<used_percent>\d+)% used\b",
-    re.IGNORECASE | re.MULTILINE,
+    r"^\s*Weekly limit:\s*(?P<used_percent>\d+)% used,\s*resets in\s+(?P<resets_after>\S+)\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -18,26 +19,51 @@ _SECONDARY_LIMIT_RE = re.compile(
 class ParsedStatus:
     primary_used_percent: int | None
     secondary_used_percent: int | None
-    credits_balance: float | None
+    credits_balance: int | None
 
 
-def _parse_int(pattern: re.Pattern[str], text: str) -> int | None:
-    match = pattern.search(text)
-    if match is None:
-        return None
-    return int(match.group("used_percent"))
-
-
-def _parse_float(pattern: re.Pattern[str], text: str) -> float | None:
-    match = pattern.search(text)
-    if match is None:
-        return None
-    return float(match.group("credits"))
+def _parse_label_line(
+    pattern: re.Pattern[str],
+    label: str,
+    text: str,
+    group_name: str,
+    converter,
+):
+    found_value = None
+    label_prefix = label.casefold()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.casefold().startswith(label_prefix):
+            match = pattern.fullmatch(line)
+            if match is None:
+                raise ValueError(f"Malformed {label} line: {line}")
+            found_value = converter(match.group(group_name))
+    return found_value
 
 
 def parse_status_output(text: str) -> ParsedStatus:
     return ParsedStatus(
-        primary_used_percent=_parse_int(_PRIMARY_LIMIT_RE, text),
-        secondary_used_percent=_parse_int(_SECONDARY_LIMIT_RE, text),
-        credits_balance=_parse_float(_CREDITS_RE, text),
+        primary_used_percent=_parse_label_line(
+            _PRIMARY_LIMIT_RE,
+            "5h limit:",
+            text,
+            "used_percent",
+            int,
+        ),
+        secondary_used_percent=_parse_label_line(
+            _SECONDARY_LIMIT_RE,
+            "Weekly limit:",
+            text,
+            "used_percent",
+            int,
+        ),
+        credits_balance=_parse_label_line(
+            _CREDITS_RE,
+            "Credits:",
+            text,
+            "credits",
+            lambda value: int(Decimal(value)),
+        ),
     )
