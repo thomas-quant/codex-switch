@@ -15,6 +15,7 @@ from codex_switch.errors import AutomationSourceUnavailableError
 
 def test_build_rpc_request_includes_id_method_and_params():
     assert build_rpc_request(7, "account/rateLimits/read", None) == {
+        "jsonrpc": "2.0",
         "id": 7,
         "method": "account/rateLimits/read",
         "params": None,
@@ -56,9 +57,10 @@ def test_codex_rpc_client_launch_default_uses_app_server_command(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    process = CodexRpcClient().launch_default()
+    client = CodexRpcClient.launch_default()
 
-    assert isinstance(process, DummyProcess)
+    assert isinstance(client, CodexRpcClient)
+    assert isinstance(client.process, DummyProcess)
     assert captured["args"] == ["codex", "-s", "read-only", "-a", "untrusted", "app-server"]
     assert captured["kwargs"]["stdin"] == subprocess.PIPE
     assert captured["kwargs"]["stdout"] == subprocess.PIPE
@@ -73,4 +75,4 @@ def test_codex_rpc_client_launch_default_normalizes_spawn_failure(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", fail_popen)
 
     with pytest.raises(AutomationSourceUnavailableError, match="Codex app-server"):
-        CodexRpcClient().launch_default()
+        CodexRpcClient.launch_default()

@@ -14,6 +14,7 @@ _SOURCE_UNAVAILABLE_MESSAGE = "Codex app-server RPC is unavailable"
 
 def build_rpc_request(request_id: int, method: str, params: Any) -> dict[str, Any]:
     return {
+        "jsonrpc": "2.0",
         "id": request_id,
         "method": method,
         "params": params,
@@ -49,12 +50,13 @@ def parse_rate_limit_notification(notification: Mapping[str, Any]) -> ParsedRate
 
 @dataclass(slots=True)
 class CodexRpcClient:
-    command: tuple[str, ...] = _DEFAULT_APP_SERVER_COMMAND
+    process: subprocess.Popen[str]
 
-    def launch_default(self) -> subprocess.Popen[str]:
+    @classmethod
+    def launch_default(cls) -> CodexRpcClient:
         try:
-            return subprocess.Popen(
-                list(self.command),
+            process = subprocess.Popen(
+                list(_DEFAULT_APP_SERVER_COMMAND),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -62,3 +64,4 @@ class CodexRpcClient:
             )
         except OSError as exc:
             raise AutomationSourceUnavailableError(_SOURCE_UNAVAILABLE_MESSAGE) from exc
+        return cls(process=process)
