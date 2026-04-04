@@ -14,6 +14,9 @@ def resolve_paths(home: Path | None = None) -> AppPaths:
         codex_root=codex_root,
         live_auth_file=codex_root / "auth.json",
         switch_root=switch_root,
+        automation_db_file=switch_root / "automation.sqlite",
+        daemon_pid_file=switch_root / "daemon.pid",
+        daemon_log_dir=switch_root / "logs",
         accounts_dir=switch_root / "accounts",
         state_file=switch_root / "state.json",
     )

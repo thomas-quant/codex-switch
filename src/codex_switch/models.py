@@ -10,6 +10,9 @@ class AppPaths:
     codex_root: Path
     live_auth_file: Path
     switch_root: Path
+    automation_db_file: Path
+    daemon_pid_file: Path
+    daemon_log_dir: Path
     accounts_dir: Path
     state_file: Path
 
