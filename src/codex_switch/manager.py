@@ -8,9 +8,20 @@ from pathlib import Path
 from typing import Callable
 
 from codex_switch.accounts import AccountStore
-from codex_switch.errors import ActiveAliasRemovalError, LoginCaptureError
+from codex_switch.automation_db import AutomationStore, RateLimitRecord, SwitchEventRecord
+from codex_switch.automation_models import HandoffPhase, RateLimitSnapshot, RateLimitWindow
+from codex_switch.automation_policy import choose_target_alias, should_trigger_soft_switch
+from codex_switch.daemon_controller import DaemonController
+from codex_switch.errors import ActiveAliasRemovalError, AutomationHandoffError, LoginCaptureError
 from codex_switch.fs import atomic_write_bytes, ensure_private_dir, file_digest
-from codex_switch.models import AppPaths, AppState, StatusResult
+from codex_switch.models import (
+    AppPaths,
+    AppState,
+    AutoSourceResult,
+    AutoStatusResult,
+    DaemonStatusResult,
+    StatusResult,
+)
 from codex_switch.state import StateStore
 
 
@@ -26,12 +37,20 @@ class CodexSwitchManager:
         state: StateStore,
         ensure_safe_to_mutate: Callable[[], None],
         login_runner: Callable[[], None],
+        automation: AutomationStore | None = None,
+        daemon_controller: DaemonController | None = None,
+        soft_switch_threshold: float = 95.0,
     ) -> None:
         self._paths = paths
         self._accounts = accounts
         self._state = state
         self._ensure_safe_to_mutate = ensure_safe_to_mutate
         self._login_runner = login_runner
+        self._automation = automation if automation is not None else AutomationStore(paths.automation_db_file)
+        self._daemon_controller = (
+            daemon_controller if daemon_controller is not None else DaemonController(paths)
+        )
+        self._soft_switch_threshold = soft_switch_threshold
 
     def list_aliases(self) -> tuple[list[str], str | None]:
         current = self._state.load()
@@ -58,6 +77,95 @@ class CodexSwitchManager:
             live_auth_exists=live_auth_exists,
             in_sync=in_sync,
         )
+
+    def daemon_install(self) -> None:
+        self._automation.initialize()
+        self._daemon_controller.install()
+
+    def daemon_start(self) -> DaemonStatusResult:
+        self._automation.initialize()
+        return self._daemon_controller.start()
+
+    def daemon_stop(self) -> DaemonStatusResult:
+        return self._daemon_controller.stop()
+
+    def daemon_status(self) -> DaemonStatusResult:
+        return self._daemon_controller.status()
+
+    def auto_status(self) -> AutoStatusResult:
+        self._automation.initialize()
+        current = self._state.load()
+        active_alias = current.active_alias
+        if active_alias is None:
+            return AutoStatusResult(
+                active_alias=None,
+                active_observed_via=None,
+                active_observed_at=None,
+                soft_switch_triggered=False,
+                target_alias=None,
+            )
+
+        active_record = self._automation.latest_rate_limit_for_alias(active_alias)
+        if active_record is None:
+            return AutoStatusResult(
+                active_alias=active_alias,
+                active_observed_via=None,
+                active_observed_at=None,
+                soft_switch_triggered=False,
+                target_alias=None,
+            )
+
+        active_snapshot = _rate_limit_record_to_snapshot(active_record)
+        soft_switch_triggered = should_trigger_soft_switch(active_snapshot, self._soft_switch_threshold)
+
+        target_alias: str | None = None
+        if soft_switch_triggered:
+            candidate_snapshots: list[RateLimitSnapshot] = []
+            for alias in self._accounts.list_aliases():
+                snapshot_record = self._automation.latest_rate_limit_for_alias(alias)
+                if snapshot_record is None:
+                    continue
+                candidate_snapshots.append(_rate_limit_record_to_snapshot(snapshot_record))
+            target_alias = choose_target_alias(
+                active_alias=active_alias,
+                candidates=candidate_snapshots,
+                threshold=self._soft_switch_threshold,
+            )
+
+        return AutoStatusResult(
+            active_alias=active_alias,
+            active_observed_via=active_record.observed_via.value,
+            active_observed_at=active_record.observed_at,
+            soft_switch_triggered=soft_switch_triggered,
+            target_alias=target_alias,
+        )
+
+    def auto_source(self) -> list[AutoSourceResult]:
+        self._automation.initialize()
+        source_rows: list[AutoSourceResult] = []
+        for alias in self._accounts.list_aliases():
+            latest = self._automation.latest_rate_limit_for_alias(alias)
+            source_rows.append(
+                AutoSourceResult(
+                    alias=alias,
+                    observed_via=latest.observed_via.value if latest is not None else None,
+                    observed_at=latest.observed_at if latest is not None else None,
+                )
+            )
+        return source_rows
+
+    def auto_history(self, limit: int = 20) -> list[SwitchEventRecord]:
+        self._automation.initialize()
+        return self._automation.list_switch_events(limit=limit)
+
+    def auto_retry_resume(self) -> str:
+        self._automation.initialize()
+        handoff = self._automation.get_handoff_state()
+        if handoff is None:
+            raise AutomationHandoffError("No handoff state is available for resume retry")
+        if handoff.phase != HandoffPhase.failed_resume:
+            raise AutomationHandoffError("Resume retry is only valid for failed_resume handoff state")
+        return handoff.thread_id
 
     def _sync_active_snapshot_from_live_auth(self, state: AppState) -> None:
         if (
@@ -203,3 +311,27 @@ class CodexSwitchManager:
         if current.active_alias == alias:
             raise ActiveAliasRemovalError(f"Cannot remove active alias '{alias}'")
         self._accounts.delete(alias)
+
+
+def _rate_limit_record_to_snapshot(record: RateLimitRecord) -> RateLimitSnapshot:
+    return RateLimitSnapshot(
+        alias=record.alias,
+        limit_id=record.limit_id,
+        limit_name=record.limit_name,
+        observed_via=record.observed_via,
+        plan_type=record.plan_type,
+        primary_window=RateLimitWindow(
+            used_percent=record.primary_used_percent,
+            resets_at=record.primary_resets_at,
+            window_duration_mins=record.primary_window_duration_mins,
+        ),
+        secondary_window=RateLimitWindow(
+            used_percent=record.secondary_used_percent,
+            resets_at=record.secondary_resets_at,
+            window_duration_mins=record.secondary_window_duration_mins,
+        ),
+        credits_has_credits=record.credits_has_credits,
+        credits_unlimited=record.credits_unlimited,
+        credits_balance=record.credits_balance,
+        observed_at=record.observed_at,
+    )

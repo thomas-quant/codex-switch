@@ -40,6 +40,28 @@ CREATE INDEX IF NOT EXISTS idx_rate_limits_alias
     ON rate_limits(alias);
 """
 
+_SWITCH_EVENTS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS switch_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT,
+    from_alias TEXT,
+    to_alias TEXT,
+    trigger_type TEXT,
+    trigger_limit_id TEXT,
+    trigger_used_percent REAL,
+    requested_at TEXT NOT NULL,
+    switched_at TEXT,
+    resumed_at TEXT,
+    result TEXT NOT NULL,
+    failure_message TEXT
+);
+"""
+
+_SWITCH_EVENTS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_switch_events_requested_at
+    ON switch_events(requested_at DESC, id DESC);
+"""
+
 
 @dataclass(slots=True, frozen=True)
 class RateLimitRecord:
@@ -58,6 +80,32 @@ class RateLimitRecord:
     credits_unlimited: bool | None
     credits_balance: str | None
     observed_at: str
+
+
+@dataclass(slots=True, frozen=True)
+class HandoffStateRecord:
+    thread_id: str
+    source_alias: str | None
+    target_alias: str | None
+    phase: HandoffPhase
+    reason: str | None
+    updated_at: str
+
+
+@dataclass(slots=True, frozen=True)
+class SwitchEventRecord:
+    id: int
+    thread_id: str | None
+    from_alias: str | None
+    to_alias: str | None
+    trigger_type: str | None
+    trigger_limit_id: str | None
+    trigger_used_percent: float | None
+    requested_at: str
+    switched_at: str | None
+    resumed_at: str | None
+    result: str
+    failure_message: str | None
 
 
 class AutomationStore:
@@ -160,6 +208,39 @@ class AutomationStore:
 
         return self._run(read_rate_limits)
 
+    def latest_rate_limit_for_alias(self, alias: str) -> RateLimitRecord | None:
+        def read_latest(conn: sqlite3.Connection) -> RateLimitRecord | None:
+            row = conn.execute(
+                """
+                SELECT
+                    alias,
+                    limit_id,
+                    limit_name,
+                    observed_via,
+                    plan_type,
+                    primary_used_percent,
+                    primary_resets_at,
+                    primary_window_duration_mins,
+                    secondary_used_percent,
+                    secondary_resets_at,
+                    secondary_window_duration_mins,
+                    credits_has_credits,
+                    credits_unlimited,
+                    credits_balance,
+                    observed_at
+                FROM rate_limits
+                WHERE alias = ?
+                ORDER BY observed_at DESC, limit_id_key ASC
+                LIMIT 1
+                """,
+                (alias,),
+            ).fetchone()
+            if row is None:
+                return None
+            return _row_to_rate_limit_record(row)
+
+        return self._run(read_latest)
+
     def set_handoff_state(
         self,
         thread_id: str,
@@ -201,6 +282,124 @@ class AutomationStore:
             )
 
         self._run(write_handoff_state)
+
+    def get_handoff_state(self) -> HandoffStateRecord | None:
+        def read_handoff_state(conn: sqlite3.Connection) -> HandoffStateRecord | None:
+            row = conn.execute(
+                """
+                SELECT
+                    thread_id,
+                    source_alias,
+                    target_alias,
+                    phase,
+                    reason,
+                    updated_at
+                FROM handoff_state
+                WHERE singleton_key = ?
+                """,
+                (_HANDOFF_STATE_KEY,),
+            ).fetchone()
+            if row is None:
+                return None
+            return HandoffStateRecord(
+                thread_id=row["thread_id"],
+                source_alias=row["source_alias"],
+                target_alias=row["target_alias"],
+                phase=HandoffPhase(row["phase"]),
+                reason=row["reason"],
+                updated_at=row["updated_at"],
+            )
+
+        return self._run(read_handoff_state)
+
+    def clear_handoff_state(self) -> None:
+        def delete_handoff_state(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "DELETE FROM handoff_state WHERE singleton_key = ?",
+                (_HANDOFF_STATE_KEY,),
+            )
+
+        self._run(delete_handoff_state)
+
+    def append_switch_event(
+        self,
+        *,
+        thread_id: str | None,
+        from_alias: str | None,
+        to_alias: str | None,
+        trigger_type: str | None,
+        trigger_limit_id: str | None,
+        trigger_used_percent: float | None,
+        requested_at: str,
+        switched_at: str | None,
+        resumed_at: str | None,
+        result: str,
+        failure_message: str | None,
+    ) -> int:
+        def write_switch_event(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute(
+                """
+                INSERT INTO switch_events (
+                    thread_id,
+                    from_alias,
+                    to_alias,
+                    trigger_type,
+                    trigger_limit_id,
+                    trigger_used_percent,
+                    requested_at,
+                    switched_at,
+                    resumed_at,
+                    result,
+                    failure_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    thread_id,
+                    from_alias,
+                    to_alias,
+                    trigger_type,
+                    trigger_limit_id,
+                    trigger_used_percent,
+                    requested_at,
+                    switched_at,
+                    resumed_at,
+                    result,
+                    failure_message,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+        return self._run(write_switch_event)
+
+    def list_switch_events(self, limit: int = 20) -> list[SwitchEventRecord]:
+        if limit <= 0:
+            return []
+
+        def read_switch_events(conn: sqlite3.Connection) -> list[SwitchEventRecord]:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    thread_id,
+                    from_alias,
+                    to_alias,
+                    trigger_type,
+                    trigger_limit_id,
+                    trigger_used_percent,
+                    requested_at,
+                    switched_at,
+                    resumed_at,
+                    result,
+                    failure_message
+                FROM switch_events
+                ORDER BY requested_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [_row_to_switch_event_record(row) for row in rows]
+
+        return self._run(read_switch_events)
 
     def _run(self, callback):
         try:
@@ -244,7 +443,9 @@ class AutomationStore:
             """
         )
         conn.executescript(_RATE_LIMITS_CREATE_SQL)
+        conn.executescript(_SWITCH_EVENTS_CREATE_SQL)
         self._ensure_rate_limits_index(conn)
+        self._ensure_switch_events_index(conn)
 
         version = self._read_schema_version(conn)
         if version is None:
@@ -293,6 +494,9 @@ class AutomationStore:
 
     def _ensure_rate_limits_index(self, conn: sqlite3.Connection) -> None:
         conn.execute(_RATE_LIMITS_INDEX_SQL)
+
+    def _ensure_switch_events_index(self, conn: sqlite3.Connection) -> None:
+        conn.execute(_SWITCH_EVENTS_INDEX_SQL)
 
     def _migrate_rate_limits_credits_balance_to_text(self, conn: sqlite3.Connection) -> None:
         declared_type = self._rate_limits_credits_balance_declared_type(conn)
@@ -384,4 +588,21 @@ def _row_to_rate_limit_record(row: sqlite3.Row) -> RateLimitRecord:
         credits_unlimited=_int_to_bool(row["credits_unlimited"]),
         credits_balance=None if row["credits_balance"] is None else str(row["credits_balance"]),
         observed_at=row["observed_at"],
+    )
+
+
+def _row_to_switch_event_record(row: sqlite3.Row) -> SwitchEventRecord:
+    return SwitchEventRecord(
+        id=row["id"],
+        thread_id=row["thread_id"],
+        from_alias=row["from_alias"],
+        to_alias=row["to_alias"],
+        trigger_type=row["trigger_type"],
+        trigger_limit_id=row["trigger_limit_id"],
+        trigger_used_percent=row["trigger_used_percent"],
+        requested_at=row["requested_at"],
+        switched_at=row["switched_at"],
+        resumed_at=row["resumed_at"],
+        result=row["result"],
+        failure_message=row["failure_message"],
     )

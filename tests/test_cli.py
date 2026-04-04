@@ -1,17 +1,30 @@
 import pytest
 
-from codex_switch.errors import CodexSwitchError
-from codex_switch.models import StatusResult
+from codex_switch.automation_db import SwitchEventRecord
 from codex_switch.cli import build_parser
 from codex_switch.cli import format_alias_lines
+from codex_switch.cli import format_auto_history_lines
+from codex_switch.cli import format_auto_source_lines
+from codex_switch.cli import format_auto_status_lines
+from codex_switch.cli import format_daemon_status_lines
 from codex_switch.cli import format_status_lines
 from codex_switch.cli import main
+from codex_switch.errors import CodexSwitchError
+from codex_switch.models import AutoSourceResult, AutoStatusResult, DaemonStatusResult, StatusResult
 
 
 def test_build_parser_registers_expected_subcommands():
     parser = build_parser()
     subparsers = next(action for action in parser._actions if getattr(action, "choices", None))
-    assert set(subparsers.choices) == {"add", "use", "list", "remove", "status"}
+    assert set(subparsers.choices) == {
+        "add",
+        "use",
+        "list",
+        "remove",
+        "status",
+        "daemon",
+        "auto",
+    }
 
 
 def test_build_parser_add_includes_alias_argument():
@@ -38,6 +51,23 @@ def test_build_parser_list_takes_no_alias_argument():
 
     assert namespace.command == "list"
     assert not hasattr(namespace, "alias")
+
+
+def test_build_parser_daemon_group_has_expected_subcommands():
+    parser = build_parser()
+    namespace = parser.parse_args(["daemon", "start"])
+
+    assert namespace.command == "daemon"
+    assert namespace.daemon_command == "start"
+
+
+def test_build_parser_auto_history_accepts_limit():
+    parser = build_parser()
+    namespace = parser.parse_args(["auto", "history", "--limit", "7"])
+
+    assert namespace.command == "auto"
+    assert namespace.auto_command == "history"
+    assert namespace.limit == 7
 
 
 def test_format_alias_lines_marks_active_alias():
@@ -78,6 +108,80 @@ def test_format_status_lines_with_no_active_alias_is_two_lines():
     assert format_status_lines(status) == [
         "active alias: none",
         "live auth: present",
+    ]
+
+
+def test_format_daemon_status_lines_covers_running_and_stale_states():
+    running = DaemonStatusResult(running=True, pid=123, pid_file_exists=True, stale_pid_file=False)
+    stale = DaemonStatusResult(running=False, pid=456, pid_file_exists=True, stale_pid_file=True)
+
+    assert format_daemon_status_lines(running) == [
+        "daemon: running",
+        "pid: 123",
+    ]
+    assert format_daemon_status_lines(stale) == [
+        "daemon: stopped",
+        "pid file: stale",
+        "last pid: 456",
+    ]
+
+
+def test_format_auto_status_lines_handles_idle_and_active_states():
+    idle = AutoStatusResult(
+        active_alias=None,
+        active_observed_via=None,
+        active_observed_at=None,
+        soft_switch_triggered=False,
+        target_alias=None,
+    )
+    active = AutoStatusResult(
+        active_alias="work",
+        active_observed_via="RPC",
+        active_observed_at="2026-04-05T00:00:00Z",
+        soft_switch_triggered=True,
+        target_alias="backup-a",
+    )
+
+    assert format_auto_status_lines(idle) == [
+        "active alias: none",
+        "automation: idle",
+    ]
+    assert format_auto_status_lines(active) == [
+        "active alias: work",
+        "telemetry: RPC @ 2026-04-05T00:00:00Z",
+        "soft trigger: yes",
+        "target alias: backup-a",
+    ]
+
+
+def test_format_auto_source_and_history_lines():
+    source_rows = [
+        AutoSourceResult(alias="work", observed_via="RPC", observed_at="2026-04-05T00:00:00Z"),
+        AutoSourceResult(alias="backup", observed_via=None, observed_at=None),
+    ]
+    history_rows = [
+        SwitchEventRecord(
+            id=7,
+            thread_id="t-1",
+            from_alias="work",
+            to_alias="backup",
+            trigger_type="soft",
+            trigger_limit_id=None,
+            trigger_used_percent=95.0,
+            requested_at="2026-04-05T01:00:00Z",
+            switched_at="2026-04-05T01:00:05Z",
+            resumed_at="2026-04-05T01:00:10Z",
+            result="success",
+            failure_message=None,
+        )
+    ]
+
+    assert format_auto_source_lines(source_rows) == [
+        "work: RPC @ 2026-04-05T00:00:00Z",
+        "backup: telemetry missing",
+    ]
+    assert format_auto_history_lines(history_rows) == [
+        "7 2026-04-05T01:00:00Z work->backup success",
     ]
 
 
@@ -166,6 +270,110 @@ def test_main_dispatches_status(monkeypatch, capsys):
         "active alias: none",
         "live auth: present",
     ]
+
+
+def test_main_dispatches_daemon_commands(monkeypatch, capsys):
+    class FakeManager:
+        def daemon_install(self) -> None:
+            return None
+
+        def daemon_start(self) -> DaemonStatusResult:
+            return DaemonStatusResult(
+                running=True,
+                pid=200,
+                pid_file_exists=True,
+                stale_pid_file=False,
+            )
+
+        def daemon_stop(self) -> DaemonStatusResult:
+            return DaemonStatusResult(
+                running=False,
+                pid=None,
+                pid_file_exists=False,
+                stale_pid_file=False,
+            )
+
+        def daemon_status(self) -> DaemonStatusResult:
+            return DaemonStatusResult(
+                running=False,
+                pid=300,
+                pid_file_exists=True,
+                stale_pid_file=True,
+            )
+
+    monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
+
+    assert main(["daemon", "install"]) == 0
+    assert capsys.readouterr().out.strip() == "daemon installed"
+
+    assert main(["daemon", "start"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["daemon: running", "pid: 200"]
+
+    assert main(["daemon", "stop"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["daemon: stopped", "pid file: missing"]
+
+    assert main(["daemon", "status"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "daemon: stopped",
+        "pid file: stale",
+        "last pid: 300",
+    ]
+
+
+def test_main_dispatches_auto_commands(monkeypatch, capsys):
+    class FakeManager:
+        def auto_status(self) -> AutoStatusResult:
+            return AutoStatusResult(
+                active_alias="work",
+                active_observed_via="RPC",
+                active_observed_at="2026-04-05T00:00:00Z",
+                soft_switch_triggered=True,
+                target_alias="backup-a",
+            )
+
+        def auto_source(self) -> list[AutoSourceResult]:
+            return [AutoSourceResult(alias="work", observed_via=None, observed_at=None)]
+
+        def auto_history(self, limit: int = 20) -> list[SwitchEventRecord]:
+            assert limit == 5
+            return [
+                SwitchEventRecord(
+                    id=1,
+                    thread_id="t1",
+                    from_alias="work",
+                    to_alias="backup",
+                    trigger_type="soft",
+                    trigger_limit_id=None,
+                    trigger_used_percent=95.0,
+                    requested_at="2026-04-05T01:00:00Z",
+                    switched_at=None,
+                    resumed_at=None,
+                    result="queued",
+                    failure_message=None,
+                )
+            ]
+
+        def auto_retry_resume(self) -> str:
+            return "thread-123"
+
+    monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
+
+    assert main(["auto", "status"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "active alias: work",
+        "telemetry: RPC @ 2026-04-05T00:00:00Z",
+        "soft trigger: yes",
+        "target alias: backup-a",
+    ]
+
+    assert main(["auto", "source"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["work: telemetry missing"]
+
+    assert main(["auto", "history", "--limit", "5"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["1 2026-04-05T01:00:00Z work->backup queued"]
+
+    assert main(["auto", "retry-resume"]) == 0
+    assert capsys.readouterr().out.strip() == "retry thread: thread-123"
 
 
 def test_main_exits_via_parser_for_user_facing_errors(monkeypatch):

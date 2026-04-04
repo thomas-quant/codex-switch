@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
+from codex_switch.automation_db import SwitchEventRecord
 from codex_switch.accounts import AccountStore
 from codex_switch.errors import CodexSwitchError
 from codex_switch.manager import CodexSwitchManager
-from codex_switch.models import StatusResult
+from codex_switch.models import AutoSourceResult, AutoStatusResult, DaemonStatusResult, StatusResult
 from codex_switch.paths import resolve_paths
 from codex_switch.state import StateStore
 
@@ -19,6 +20,19 @@ def build_parser() -> argparse.ArgumentParser:
         child = subparsers.add_parser(name)
         if name in {"add", "use", "remove"}:
             child.add_argument("alias")
+
+    daemon_parser = subparsers.add_parser("daemon")
+    daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", required=True)
+    for name in ("install", "start", "stop", "status"):
+        daemon_subparsers.add_parser(name)
+
+    auto_parser = subparsers.add_parser("auto")
+    auto_subparsers = auto_parser.add_subparsers(dest="auto_command", required=True)
+    auto_subparsers.add_parser("status")
+    auto_subparsers.add_parser("source")
+    history_parser = auto_subparsers.add_parser("history")
+    history_parser.add_argument("--limit", type=int, default=20)
+    auto_subparsers.add_parser("retry-resume")
 
     return parser
 
@@ -67,6 +81,75 @@ def format_status_lines(status: StatusResult) -> list[str]:
     ]
 
 
+def format_daemon_status_lines(status: DaemonStatusResult) -> list[str]:
+    if status.running:
+        return [
+            "daemon: running",
+            f"pid: {status.pid}",
+        ]
+
+    if status.stale_pid_file:
+        if status.pid is None:
+            return [
+                "daemon: stopped",
+                "pid file: stale",
+            ]
+        return [
+            "daemon: stopped",
+            "pid file: stale",
+            f"last pid: {status.pid}",
+        ]
+
+    return [
+        "daemon: stopped",
+        "pid file: missing",
+    ]
+
+
+def format_auto_status_lines(status: AutoStatusResult) -> list[str]:
+    if status.active_alias is None:
+        return [
+            "active alias: none",
+            "automation: idle",
+        ]
+
+    lines = [f"active alias: {status.active_alias}"]
+    if status.active_observed_via is None or status.active_observed_at is None:
+        lines.append("telemetry: missing")
+    else:
+        lines.append(f"telemetry: {status.active_observed_via} @ {status.active_observed_at}")
+    lines.append(f"soft trigger: {'yes' if status.soft_switch_triggered else 'no'}")
+    lines.append(f"target alias: {status.target_alias if status.target_alias is not None else 'none'}")
+    return lines
+
+
+def format_auto_source_lines(rows: list[AutoSourceResult]) -> list[str]:
+    if not rows:
+        return ["No aliases configured."]
+
+    lines: list[str] = []
+    for row in rows:
+        if row.observed_via is None or row.observed_at is None:
+            lines.append(f"{row.alias}: telemetry missing")
+        else:
+            lines.append(f"{row.alias}: {row.observed_via} @ {row.observed_at}")
+    return lines
+
+
+def format_auto_history_lines(rows: list[SwitchEventRecord]) -> list[str]:
+    if not rows:
+        return ["No switch events recorded."]
+    return [
+        (
+            f"{row.id} {row.requested_at} "
+            f"{row.from_alias if row.from_alias is not None else '-'}"
+            f"->{row.to_alias if row.to_alias is not None else '-'} "
+            f"{row.result}"
+        )
+        for row in rows
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -87,6 +170,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"removed alias: {args.alias}")
         elif args.command == "status":
             print(*format_status_lines(manager.status()), sep="\n")
+        elif args.command == "daemon":
+            if args.daemon_command == "install":
+                manager.daemon_install()
+                print("daemon installed")
+            elif args.daemon_command == "start":
+                print(*format_daemon_status_lines(manager.daemon_start()), sep="\n")
+            elif args.daemon_command == "stop":
+                print(*format_daemon_status_lines(manager.daemon_stop()), sep="\n")
+            elif args.daemon_command == "status":
+                print(*format_daemon_status_lines(manager.daemon_status()), sep="\n")
+            else:
+                parser.error(f"unknown daemon command: {args.daemon_command}")
+        elif args.command == "auto":
+            if args.auto_command == "status":
+                print(*format_auto_status_lines(manager.auto_status()), sep="\n")
+            elif args.auto_command == "source":
+                print(*format_auto_source_lines(manager.auto_source()), sep="\n")
+            elif args.auto_command == "history":
+                print(*format_auto_history_lines(manager.auto_history(limit=args.limit)), sep="\n")
+            elif args.auto_command == "retry-resume":
+                thread_id = manager.auto_retry_resume()
+                print(f"retry thread: {thread_id}")
+            else:
+                parser.error(f"unknown auto command: {args.auto_command}")
         else:
             parser.error(f"unknown command: {args.command}")
     except CodexSwitchError as exc:

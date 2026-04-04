@@ -30,3 +30,27 @@ class StatusResult:
     snapshot_exists: bool
     live_auth_exists: bool
     in_sync: bool | None
+
+
+@dataclass(slots=True, frozen=True)
+class DaemonStatusResult:
+    running: bool
+    pid: int | None
+    pid_file_exists: bool
+    stale_pid_file: bool
+
+
+@dataclass(slots=True, frozen=True)
+class AutoStatusResult:
+    active_alias: str | None
+    active_observed_via: str | None
+    active_observed_at: str | None
+    soft_switch_triggered: bool
+    target_alias: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class AutoSourceResult:
+    alias: str
+    observed_via: str | None
+    observed_at: str | None

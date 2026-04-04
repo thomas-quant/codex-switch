@@ -44,6 +44,30 @@ Shows the active alias, whether its snapshot exists, whether `~/.codex/auth.json
 
 Deletes a stored alias snapshot. Removing the active alias is refused.
 
+### `codex-switch daemon install`
+
+Initializes automation state storage and daemon directories under `~/.codex-switch/`.
+
+### `codex-switch daemon start|stop|status`
+
+Manages the background `codex-switchd` process used for automation monitoring.
+
+### `codex-switch auto status`
+
+Shows automation readiness for the active alias, including latest telemetry source and whether a soft-switch trigger is armed.
+
+### `codex-switch auto source`
+
+Shows the latest telemetry source timestamp for each configured alias.
+
+### `codex-switch auto history [--limit N]`
+
+Shows recent recorded switch events from the local automation database.
+
+### `codex-switch auto retry-resume`
+
+Prints the recorded thread id when automation is in `failed_resume` handoff state so the same thread can be resumed manually.
+
 ## Usage
 
 Check the current state first:
@@ -91,6 +115,22 @@ Switch accounts when you hit limits:
 codex-switch use alpha
 codex-switch use beta
 codex-switch status
+```
+
+Start automation daemon management:
+
+```bash
+codex-switch daemon install
+codex-switch daemon start
+codex-switch daemon status
+```
+
+Inspect automation telemetry and decisions:
+
+```bash
+codex-switch auto status
+codex-switch auto source
+codex-switch auto history --limit 10
 ```
 
 Remove an alias you no longer need:
