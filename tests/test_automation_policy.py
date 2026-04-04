@@ -78,3 +78,12 @@ def test_choose_target_alias_uses_earliest_reset_time_when_all_aliases_near_exha
     ]
 
     assert choose_target_alias("work", candidates, 95) == "beta"
+
+
+def test_choose_target_alias_returns_none_when_all_candidate_telemetry_is_unknown() -> None:
+    candidates = [
+        make_snapshot("alpha", None, None),
+        make_snapshot("beta", None, None),
+    ]
+
+    assert choose_target_alias("work", candidates, 95) is None
