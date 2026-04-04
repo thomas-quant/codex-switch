@@ -27,7 +27,7 @@ class RateLimitWindow:
 @dataclass(slots=True, frozen=True)
 class RateLimitSnapshot:
     alias: str
-    limit_id: str
+    limit_id: str | None
     limit_name: str
     observed_via: UsageSource
     plan_type: str | None
