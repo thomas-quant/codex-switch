@@ -292,3 +292,123 @@ def test_initialize_rejects_symlinked_db_path(tmp_path):
         store.initialize()
 
     assert not outside_target.exists()
+
+
+def test_store_reads_latest_rate_limit_for_alias(tmp_path):
+    paths = resolve_paths(tmp_path)
+    store = AutomationStore(paths.automation_db_file)
+    store.initialize()
+    store.upsert_rate_limit(
+        RateLimitSnapshot(
+            alias="work",
+            limit_id=None,
+            limit_name="Daily limit",
+            observed_via=UsageSource.PTY,
+            plan_type="pro",
+            primary_window=RateLimitWindow(
+                used_percent=80,
+                resets_at="2026-04-04T00:00:00Z",
+                window_duration_mins=60,
+            ),
+            secondary_window=RateLimitWindow(
+                used_percent=60,
+                resets_at="2026-04-05T00:00:00Z",
+                window_duration_mins=10080,
+            ),
+            credits_has_credits=True,
+            credits_unlimited=False,
+            credits_balance="3.5",
+            observed_at="2026-04-04T00:00:00Z",
+        )
+    )
+    store.upsert_rate_limit(
+        RateLimitSnapshot(
+            alias="work",
+            limit_id="weekly",
+            limit_name="Weekly limit",
+            observed_via=UsageSource.RPC,
+            plan_type="pro",
+            primary_window=RateLimitWindow(
+                used_percent=30,
+                resets_at="2026-04-06T00:00:00Z",
+                window_duration_mins=300,
+            ),
+            secondary_window=RateLimitWindow(
+                used_percent=20,
+                resets_at="2026-04-07T00:00:00Z",
+                window_duration_mins=10080,
+            ),
+            credits_has_credits=True,
+            credits_unlimited=False,
+            credits_balance="2.0",
+            observed_at="2026-04-04T01:00:00Z",
+        )
+    )
+
+    latest = store.latest_rate_limit_for_alias("work")
+
+    assert latest is not None
+    assert latest.limit_id == "weekly"
+    assert latest.observed_via == UsageSource.RPC
+    assert store.latest_rate_limit_for_alias("missing") is None
+
+
+def test_store_gets_and_clears_handoff_state(tmp_path):
+    paths = resolve_paths(tmp_path)
+    store = AutomationStore(paths.automation_db_file)
+    store.initialize()
+    store.set_handoff_state(
+        thread_id="thread-1",
+        source_alias="a",
+        target_alias="b",
+        phase=HandoffPhase.failed_resume,
+        reason="resume failed",
+        updated_at="2026-04-05T01:00:00Z",
+    )
+
+    record = store.get_handoff_state()
+    assert record is not None
+    assert record.phase == HandoffPhase.failed_resume
+    assert record.thread_id == "thread-1"
+
+    store.clear_handoff_state()
+    assert store.get_handoff_state() is None
+
+
+def test_store_records_and_lists_switch_events(tmp_path):
+    paths = resolve_paths(tmp_path)
+    store = AutomationStore(paths.automation_db_file)
+    store.initialize()
+
+    first_id = store.append_switch_event(
+        thread_id="thread-1",
+        from_alias="work",
+        to_alias="backup",
+        trigger_type="soft",
+        trigger_limit_id=None,
+        trigger_used_percent=95.0,
+        requested_at="2026-04-05T01:00:00Z",
+        switched_at="2026-04-05T01:00:05Z",
+        resumed_at="2026-04-05T01:00:10Z",
+        result="success",
+        failure_message=None,
+    )
+    second_id = store.append_switch_event(
+        thread_id="thread-2",
+        from_alias="backup",
+        to_alias="work",
+        trigger_type="hard",
+        trigger_limit_id="weekly",
+        trigger_used_percent=100.0,
+        requested_at="2026-04-05T02:00:00Z",
+        switched_at=None,
+        resumed_at=None,
+        result="failed_resume",
+        failure_message="resume failed",
+    )
+
+    rows = store.list_switch_events(limit=10)
+    assert [row.id for row in rows] == [second_id, first_id]
+    assert rows[0].result == "failed_resume"
+    assert rows[1].result == "success"
+    assert store.list_switch_events(limit=0) == []
