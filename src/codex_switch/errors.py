@@ -39,3 +39,23 @@ class StateFileError(CodexSwitchError):
 
 class LoginCaptureError(CodexSwitchError):
     pass
+
+
+class AutomationDatabaseError(CodexSwitchError):
+    pass
+
+
+class AutomationSourceUnavailableError(CodexSwitchError):
+    pass
+
+
+class AutomationHandoffError(CodexSwitchError):
+    pass
+
+
+class DaemonAlreadyRunningError(CodexSwitchError):
+    pass
+
+
+class DaemonNotRunningError(CodexSwitchError):
+    pass
