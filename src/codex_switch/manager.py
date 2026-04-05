@@ -13,7 +13,12 @@ from codex_switch.automation_db import AutomationStore, RateLimitRecord, SwitchE
 from codex_switch.automation_models import HandoffPhase, RateLimitSnapshot, RateLimitWindow
 from codex_switch.automation_policy import choose_target_alias, should_trigger_soft_switch
 from codex_switch.daemon_controller import DaemonController
-from codex_switch.errors import ActiveAliasRemovalError, AutomationHandoffError, LoginCaptureError
+from codex_switch.errors import (
+    ActiveAliasRemovalError,
+    AutomationDatabaseError,
+    AutomationHandoffError,
+    LoginCaptureError,
+)
 from codex_switch.fs import atomic_write_bytes, ensure_private_dir, file_digest
 from codex_switch.models import (
     AliasListEntry,
@@ -62,11 +67,14 @@ class CodexSwitchManager:
         self._resume_runner = resume_runner
 
     def list_aliases(self) -> tuple[list[AliasListEntry], str | None]:
-        self._automation.initialize()
         current = self._state.load()
-        cached_rows = {row.alias: row for row in self._automation.list_aliases()}
+        aliases = self._accounts.list_aliases()
+        try:
+            cached_rows = {row.alias: row for row in self._automation.list_aliases()}
+        except AutomationDatabaseError:
+            cached_rows = {}
         entries: list[AliasListEntry] = []
-        for alias in self._accounts.list_aliases():
+        for alias in aliases:
             cached_row = cached_rows.get(alias)
             entries.append(
                 AliasListEntry(
