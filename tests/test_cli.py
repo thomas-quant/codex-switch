@@ -13,7 +13,14 @@ from codex_switch.cli import format_daemon_status_lines
 from codex_switch.cli import format_status_lines
 from codex_switch.cli import main
 from codex_switch.errors import CodexSwitchError
-from codex_switch.models import AutoSourceResult, AutoStatusResult, DaemonStatusResult, LoginMode, StatusResult
+from codex_switch.models import (
+    AliasListEntry,
+    AutoSourceResult,
+    AutoStatusResult,
+    DaemonStatusResult,
+    LoginMode,
+    StatusResult,
+)
 
 
 def test_build_parser_registers_expected_subcommands():
@@ -112,7 +119,13 @@ def test_build_parser_auto_history_accepts_limit():
 
 
 def test_format_alias_lines_marks_active_alias():
-    assert format_alias_lines(["personal", "work"], "work") == [
+    assert format_alias_lines(
+        [
+            AliasListEntry(alias="personal", plan_type=None),
+            AliasListEntry(alias="work", plan_type=None),
+        ],
+        "work",
+    ) == [
         "  personal",
         "* work",
     ]
@@ -120,6 +133,19 @@ def test_format_alias_lines_marks_active_alias():
 
 def test_format_alias_lines_handles_empty_alias_list():
     assert format_alias_lines([], None) == ["No aliases configured."]
+
+
+def test_format_alias_lines_appends_plan_types_when_known():
+    assert format_alias_lines(
+        [
+            AliasListEntry(alias="backup", plan_type=None),
+            AliasListEntry(alias="beta", plan_type="plus"),
+        ],
+        "beta",
+    ) == [
+        "  backup",
+        "* beta -- plus",
+    ]
 
 
 def test_format_status_lines_marks_dirty_state():
@@ -279,8 +305,11 @@ def test_main_dispatches_use(monkeypatch, capsys):
 
 def test_main_dispatches_list(monkeypatch, capsys):
     class FakeManager:
-        def list_aliases(self) -> tuple[list[str], str | None]:
-            return ["personal", "work"], "work"
+        def list_aliases(self) -> tuple[list[AliasListEntry], str | None]:
+            return [
+                AliasListEntry(alias="personal", plan_type=None),
+                AliasListEntry(alias="work", plan_type="pro"),
+            ], "work"
 
     monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
 
@@ -288,7 +317,7 @@ def test_main_dispatches_list(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert result == 0
-    assert captured.out.splitlines() == ["  personal", "* work"]
+    assert captured.out.splitlines() == ["  personal", "* work -- pro"]
 
 
 def test_main_dispatches_remove(monkeypatch, capsys):

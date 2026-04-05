@@ -16,6 +16,7 @@ from codex_switch.daemon_controller import DaemonController
 from codex_switch.errors import ActiveAliasRemovalError, AutomationHandoffError, LoginCaptureError
 from codex_switch.fs import atomic_write_bytes, ensure_private_dir, file_digest
 from codex_switch.models import (
+    AliasListEntry,
     AppPaths,
     AppState,
     AutoSourceResult,
@@ -60,9 +61,20 @@ class CodexSwitchManager:
         self._soft_switch_threshold = soft_switch_threshold
         self._resume_runner = resume_runner
 
-    def list_aliases(self) -> tuple[list[str], str | None]:
+    def list_aliases(self) -> tuple[list[AliasListEntry], str | None]:
+        self._automation.initialize()
         current = self._state.load()
-        return self._accounts.list_aliases(), current.active_alias
+        cached_rows = {row.alias: row for row in self._automation.list_aliases()}
+        entries: list[AliasListEntry] = []
+        for alias in self._accounts.list_aliases():
+            cached_row = cached_rows.get(alias)
+            entries.append(
+                AliasListEntry(
+                    alias=alias,
+                    plan_type=cached_row.account_plan_type if cached_row is not None else None,
+                )
+            )
+        return entries, current.active_alias
 
     def status(self) -> StatusResult:
         current = self._state.load()
