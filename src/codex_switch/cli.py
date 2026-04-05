@@ -8,6 +8,7 @@ from codex_switch.accounts import AccountStore
 from codex_switch.errors import CodexSwitchError
 from codex_switch.manager import CodexSwitchManager
 from codex_switch.models import (
+    AliasListEntry,
     AutoSourceResult,
     AutoStatusResult,
     DaemonStatusResult,
@@ -61,10 +62,15 @@ def build_default_manager() -> CodexSwitchManager:
     )
 
 
-def format_alias_lines(aliases: list[str], active_alias: str | None) -> list[str]:
-    if not aliases:
+def format_alias_lines(entries: list[AliasListEntry], active_alias: str | None) -> list[str]:
+    if not entries:
         return ["No aliases configured."]
-    return [f"* {alias}" if alias == active_alias else f"  {alias}" for alias in aliases]
+    lines: list[str] = []
+    for entry in entries:
+        label = entry.alias if entry.plan_type is None else f"{entry.alias} -- {entry.plan_type}"
+        prefix = "* " if entry.alias == active_alias else "  "
+        lines.append(f"{prefix}{label}")
+    return lines
 
 
 def format_status_lines(status: StatusResult) -> list[str]:
