@@ -9,6 +9,7 @@ from codex_switch.errors import CodexSwitchError
 from codex_switch.manager import CodexSwitchManager
 from codex_switch.models import (
     AliasListEntry,
+    AliasTelemetryObservation,
     AutoSourceResult,
     AutoStatusResult,
     DaemonStatusResult,
@@ -48,17 +49,57 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_default_manager() -> CodexSwitchManager:
     from codex_switch.codex_login import run_codex_login
+    from codex_switch.daemon_runtime import AppServerRpcSource, CodexCliPtySource
+    from codex_switch.errors import AutomationSourceUnavailableError
+    from codex_switch.manager import utc_now
     from codex_switch.process_guard import ensure_codex_not_running
 
     paths = resolve_paths()
     accounts = AccountStore(paths.accounts_dir)
     state = StateStore(paths.state_file)
+    rpc_source = AppServerRpcSource()
+    pty_source = CodexCliPtySource()
+
+    def probe_alias_metadata(alias: str):
+        try:
+            poll = rpc_source.poll(active_alias=alias)
+        except AutomationSourceUnavailableError:
+            observed_at = utc_now()
+            snapshot = pty_source.probe(alias=alias, observed_at=observed_at)
+            if snapshot is None:
+                return None
+            return AliasTelemetryObservation(
+                account_email=None,
+                account_plan_type=snapshot.plan_type,
+                account_fingerprint=None,
+                observed_at=snapshot.observed_at,
+            )
+
+        account_identity = poll.account_identity
+        plan_type = None if account_identity is None else account_identity.plan_type
+        observed_at = None if account_identity is None else account_identity.observed_at
+        if plan_type is None:
+            for snapshot in poll.rate_limits:
+                if snapshot.plan_type is not None:
+                    plan_type = snapshot.plan_type
+                    observed_at = snapshot.observed_at
+                    break
+        if plan_type is None and account_identity is None:
+            return None
+        return AliasTelemetryObservation(
+            account_email=None if account_identity is None else account_identity.email,
+            account_plan_type=plan_type,
+            account_fingerprint=None if account_identity is None else account_identity.fingerprint,
+            observed_at=observed_at if observed_at is not None else utc_now(),
+        )
+
     return CodexSwitchManager(
         paths=paths,
         accounts=accounts,
         state=state,
         ensure_safe_to_mutate=ensure_codex_not_running,
         login_runner=run_codex_login,
+        alias_metadata_probe=probe_alias_metadata,
     )
 
 

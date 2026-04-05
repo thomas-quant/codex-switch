@@ -82,6 +82,7 @@ def test_build_default_manager_threads_login_mode_through_runner(monkeypatch):
     assert callable(login_runner)
     login_runner(LoginMode.DEVICE_AUTH)
     assert captured["login_mode"] == LoginMode.DEVICE_AUTH
+    assert callable(captured["alias_metadata_probe"])
 
 
 @pytest.mark.parametrize("command", ["add", "use", "remove"])
