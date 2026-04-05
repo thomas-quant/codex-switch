@@ -7,9 +7,12 @@ from codex_switch.models import LoginMode
 
 
 def run_codex_login(mode: LoginMode) -> None:
-    command = ["codex", "login"]
-    if mode is LoginMode.DEVICE_AUTH:
-        command.append("--device-auth")
+    if mode is LoginMode.BROWSER:
+        command = ["codex", "login"]
+    elif mode is LoginMode.DEVICE_AUTH:
+        command = ["codex", "login", "--device-auth"]
+    else:
+        raise LoginCaptureError("unsupported codex login mode")
     try:
         result = subprocess.run(command, check=False)
     except OSError as exc:
