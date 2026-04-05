@@ -6,7 +6,7 @@ from codex_switch.errors import LoginCaptureError
 from codex_switch.models import LoginMode
 
 
-def run_codex_login(mode: LoginMode) -> None:
+def run_codex_login(mode: LoginMode = LoginMode.BROWSER) -> None:
     if mode is LoginMode.BROWSER:
         command = ["codex", "login"]
     elif mode is LoginMode.DEVICE_AUTH:

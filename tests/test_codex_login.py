@@ -32,6 +32,21 @@ def test_run_codex_login_builds_command_for_mode(monkeypatch, mode, expected_arg
     assert captured_args == [expected_args]
 
 
+def test_run_codex_login_defaults_to_browser_mode(monkeypatch):
+    captured_args = []
+
+    def fake_run(args, **kwargs):
+        assert kwargs == {"check": False}
+        captured_args.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    run_codex_login()
+
+    assert captured_args == [["codex", "login"]]
+
+
 def test_run_codex_login_raises_on_unsupported_mode(monkeypatch):
     def unexpected_run(*args, **kwargs):
         raise AssertionError("subprocess.run should not be called")
