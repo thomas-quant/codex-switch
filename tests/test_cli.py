@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from codex_switch.automation_db import SwitchEventRecord
 from codex_switch.cli import build_parser
@@ -10,8 +11,7 @@ from codex_switch.cli import format_daemon_status_lines
 from codex_switch.cli import format_status_lines
 from codex_switch.cli import main
 from codex_switch.errors import CodexSwitchError
-from codex_switch.manager import LoginMode
-from codex_switch.models import AutoSourceResult, AutoStatusResult, DaemonStatusResult, StatusResult
+from codex_switch.models import AutoSourceResult, AutoStatusResult, DaemonStatusResult, LoginMode, StatusResult
 
 
 def test_build_parser_registers_expected_subcommands():
@@ -45,6 +45,34 @@ def test_build_parser_add_accepts_device_auth_flag():
     assert namespace.command == "add"
     assert namespace.alias == "work"
     assert namespace.device_auth is True
+
+
+def test_build_default_manager_threads_login_mode_through_runner(monkeypatch):
+    captured = {}
+
+    class FakeManager:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
+    monkeypatch.setattr(
+        "codex_switch.cli.resolve_paths",
+        lambda: SimpleNamespace(accounts_dir=object(), state_file=object()),
+    )
+    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: object())
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: object())
+    monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
+    monkeypatch.setattr(
+        "codex_switch.codex_login.run_codex_login",
+        lambda login_mode: captured.setdefault("login_mode", login_mode),
+    )
+
+    from codex_switch.cli import build_default_manager
+
+    build_default_manager()
+
+    captured["login_runner"](LoginMode.DEVICE_AUTH)
+    assert captured["login_mode"] == LoginMode.DEVICE_AUTH
 
 
 @pytest.mark.parametrize("command", ["add", "use", "remove"])
