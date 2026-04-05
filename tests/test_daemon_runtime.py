@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import threading
 import time
 
@@ -98,6 +99,15 @@ def make_rate_limit_snapshot(
         credits_unlimited=False,
         credits_balance="5.25",
         observed_at=observed_at,
+    )
+
+
+def make_fresh_observed_at() -> str:
+    return (
+        (datetime.now(timezone.utc) - timedelta(minutes=1))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 
@@ -245,7 +255,7 @@ def test_daemon_runtime_soft_trigger_switches_at_safe_checkpoint(tmp_path):
     accounts.write_snapshot_from_bytes("backup", b'{"token":"backup"}')
     state.save(AppState(active_alias="work", updated_at="2026-04-05T00:00:00Z"))
     store.reconcile_aliases(["work", "backup"])
-    store.upsert_rate_limit(make_rate_limit_snapshot("backup", 10, 5, observed_at="2026-04-05T00:00:00Z"))
+    store.upsert_rate_limit(make_rate_limit_snapshot("backup", 10, 5, observed_at=make_fresh_observed_at()))
     paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
     paths.live_auth_file.write_bytes(b'{"token":"live-work"}')
 
@@ -302,7 +312,7 @@ def test_daemon_runtime_defers_soft_trigger_until_thread_is_safe(tmp_path):
     accounts.write_snapshot_from_bytes("backup", b'{"token":"backup"}')
     state.save(AppState(active_alias="work", updated_at="2026-04-05T00:00:00Z"))
     store.reconcile_aliases(["work", "backup"])
-    store.upsert_rate_limit(make_rate_limit_snapshot("backup", 10, 5, observed_at="2026-04-05T00:00:00Z"))
+    store.upsert_rate_limit(make_rate_limit_snapshot("backup", 10, 5, observed_at=make_fresh_observed_at()))
     paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
     paths.live_auth_file.write_bytes(b'{"token":"live-work"}')
 
@@ -349,7 +359,7 @@ def test_daemon_runtime_marks_failed_resume_and_keeps_target_active(tmp_path):
     accounts.write_snapshot_from_bytes("backup", b'{"token":"backup"}')
     state.save(AppState(active_alias="work", updated_at="2026-04-05T00:00:00Z"))
     store.reconcile_aliases(["work", "backup"])
-    store.upsert_rate_limit(make_rate_limit_snapshot("backup", 10, 5, observed_at="2026-04-05T00:00:00Z"))
+    store.upsert_rate_limit(make_rate_limit_snapshot("backup", 10, 5, observed_at=make_fresh_observed_at()))
     paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
     paths.live_auth_file.write_bytes(b'{"token":"live-work"}')
 
