@@ -148,6 +148,13 @@ def test_format_alias_lines_appends_plan_types_when_known():
     ]
 
 
+def test_format_alias_lines_omits_blank_plan_types():
+    assert format_alias_lines(
+        [AliasListEntry(alias="beta", plan_type="")],
+        "beta",
+    ) == ["* beta"]
+
+
 def test_format_status_lines_marks_dirty_state():
     status = StatusResult(
         active_alias="work",

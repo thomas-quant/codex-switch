@@ -67,7 +67,8 @@ def format_alias_lines(entries: list[AliasListEntry], active_alias: str | None) 
         return ["No aliases configured."]
     lines: list[str] = []
     for entry in entries:
-        label = entry.alias if entry.plan_type is None else f"{entry.alias} -- {entry.plan_type}"
+        plan_type = entry.plan_type.strip() if entry.plan_type is not None else None
+        label = entry.alias if not plan_type else f"{entry.alias} -- {plan_type}"
         prefix = "* " if entry.alias == active_alias else "  "
         lines.append(f"{prefix}{label}")
     return lines

@@ -69,17 +69,23 @@ class CodexSwitchManager:
     def list_aliases(self) -> tuple[list[AliasListEntry], str | None]:
         current = self._state.load()
         aliases = self._accounts.list_aliases()
-        try:
-            cached_rows = {row.alias: row for row in self._automation.list_aliases()}
-        except AutomationDatabaseError:
-            cached_rows = {}
+        cached_rows = {}
+        if aliases and self._paths.automation_db_file.exists():
+            try:
+                cached_rows = {row.alias: row for row in self._automation.list_aliases()}
+            except AutomationDatabaseError:
+                cached_rows = {}
         entries: list[AliasListEntry] = []
         for alias in aliases:
             cached_row = cached_rows.get(alias)
+            plan_type = None
+            if cached_row is not None and cached_row.account_plan_type is not None:
+                normalized_plan_type = cached_row.account_plan_type.strip()
+                plan_type = normalized_plan_type or None
             entries.append(
                 AliasListEntry(
                     alias=alias,
-                    plan_type=cached_row.account_plan_type if cached_row is not None else None,
+                    plan_type=plan_type,
                 )
             )
         return entries, current.active_alias
