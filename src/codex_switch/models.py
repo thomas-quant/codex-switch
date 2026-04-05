@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,3 +55,8 @@ class AutoSourceResult:
     alias: str
     observed_via: str | None
     observed_at: str | None
+
+
+class LoginMode(Enum):
+    BROWSER = "browser"
+    DEVICE_AUTH = "device-auth"

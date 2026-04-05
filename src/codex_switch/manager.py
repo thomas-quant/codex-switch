@@ -6,7 +6,6 @@ import tempfile
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from enum import Enum
 from typing import Callable
 
 from codex_switch.accounts import AccountStore
@@ -22,6 +21,7 @@ from codex_switch.models import (
     AutoSourceResult,
     AutoStatusResult,
     DaemonStatusResult,
+    LoginMode,
     StatusResult,
 )
 from codex_switch.state import StateStore
@@ -33,11 +33,6 @@ def utc_now() -> str:
 
 def run_codex_resume(thread_id: str) -> None:
     subprocess.run(["codex", "resume", thread_id], check=True)
-
-
-class LoginMode(Enum):
-    BROWSER = "browser"
-    DEVICE_AUTH = "device-auth"
 
 
 class CodexSwitchManager:

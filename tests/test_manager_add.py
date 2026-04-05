@@ -4,8 +4,8 @@ import pytest
 
 from codex_switch.accounts import AccountStore
 from codex_switch.errors import AliasAlreadyExistsError, LoginCaptureError
-from codex_switch.manager import CodexSwitchManager, LoginMode
-from codex_switch.models import AppState
+from codex_switch.manager import CodexSwitchManager
+from codex_switch.models import AppState, LoginMode
 from codex_switch.paths import resolve_paths
 from codex_switch.state import StateStore
 

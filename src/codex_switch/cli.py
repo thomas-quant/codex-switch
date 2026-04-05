@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from codex_switch.automation_db import SwitchEventRecord
 from codex_switch.accounts import AccountStore
 from codex_switch.errors import CodexSwitchError
-from codex_switch.manager import CodexSwitchManager, LoginMode
-from codex_switch.models import AutoSourceResult, AutoStatusResult, DaemonStatusResult, StatusResult
+from codex_switch.manager import CodexSwitchManager
+from codex_switch.models import AutoSourceResult, AutoStatusResult, DaemonStatusResult, LoginMode, StatusResult
 from codex_switch.paths import resolve_paths
 from codex_switch.state import StateStore
 
@@ -51,7 +51,7 @@ def build_default_manager() -> CodexSwitchManager:
         accounts=accounts,
         state=state,
         ensure_safe_to_mutate=ensure_codex_not_running,
-        login_runner=lambda _login_mode: run_codex_login(),
+        login_runner=run_codex_login,
     )
 
 
