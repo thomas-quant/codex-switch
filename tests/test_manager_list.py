@@ -55,3 +55,22 @@ def test_list_aliases_uses_cached_plan_types(tmp_path):
         AliasListEntry(alias="beta", plan_type="plus"),
     ]
     assert active_alias == "beta"
+
+
+def test_list_aliases_falls_back_when_automation_db_is_unavailable(tmp_path):
+    manager, accounts, state, store = make_manager(tmp_path)
+    accounts.write_snapshot_from_bytes("backup", b"{}")
+    accounts.write_snapshot_from_bytes("beta", b"{}")
+    state.save(AppState(active_alias="beta", updated_at="2026-04-05T00:00:00Z"))
+
+    db_file = store._db_file
+    db_file.unlink()
+    db_file.symlink_to(tmp_path / "automation-target.sqlite")
+
+    entries, active_alias = manager.list_aliases()
+
+    assert entries == [
+        AliasListEntry(alias="backup", plan_type=None),
+        AliasListEntry(alias="beta", plan_type=None),
+    ]
+    assert active_alias == "beta"
