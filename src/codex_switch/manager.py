@@ -128,12 +128,13 @@ class CodexSwitchManager:
         for alias in aliases:
             alias_metadata = metadata.get(alias)
             rate_limit = latest_rate_limits.get(alias)
+            plan_type = None if alias_metadata is None else _normalize_plan_type(alias_metadata.account_plan_type)
+            if plan_type is None and rate_limit is not None:
+                plan_type = _normalize_plan_type(rate_limit.plan_type)
             entries.append(
                 AliasListEntry(
                     alias=alias,
-                    plan_type=_normalize_plan_type(
-                        None if alias_metadata is None else alias_metadata.account_plan_type
-                    ),
+                    plan_type=plan_type,
                     five_hour_left_percent=_remaining_percent(
                         None if rate_limit is None else rate_limit.primary_used_percent
                     ),
@@ -584,10 +585,12 @@ def _remaining_percent(used_percent: float | None) -> int | None:
 def _choose_display_rate_limit(rows: list[RateLimitRecord]) -> RateLimitRecord | None:
     if not rows:
         return None
-    for row in rows:
+    newest_observed_at = rows[0].observed_at
+    newest_rows = [row for row in rows if row.observed_at == newest_observed_at]
+    for row in newest_rows:
         if row.limit_id == "codex":
             return row
-    for row in rows:
+    for row in newest_rows:
         if row.primary_used_percent is not None and row.secondary_used_percent is not None:
             return row
-    return rows[0]
+    return newest_rows[0]
