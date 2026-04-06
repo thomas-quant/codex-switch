@@ -116,6 +116,7 @@ codex-switch add beta --device-auth
 codex-switch add gamma
 codex-switch add delta
 codex-switch add epsilon
+codex-switch use epsilon
 codex-switch list
 ```
 
@@ -123,9 +124,9 @@ Labelled output:
 
 ```text
   beta -- plus -- 5h left: ? -- weekly left: ?
-  gamma -- pro -- 5h left: ? -- weekly left: ?
   delta -- 5h left: ? -- weekly left: ?
 * epsilon -- 5h left: ? -- weekly left: ?
+  gamma -- pro -- 5h left: ? -- weekly left: ?
 ```
 
 Table mode config:
