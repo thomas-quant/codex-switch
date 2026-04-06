@@ -13,6 +13,8 @@ def load_app_config(config_file: Path) -> AppConfig:
         return AppConfig()
     except OSError:
         return AppConfig()
+    except UnicodeDecodeError:
+        return AppConfig()
 
     try:
         payload = json.loads(text)
