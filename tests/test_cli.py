@@ -796,11 +796,15 @@ def test_main_dispatches_status(monkeypatch, capsys):
 
 
 def test_main_dispatches_daemon_commands(monkeypatch, capsys):
+    calls: list[str] = []
+
     class FakeManager:
         def daemon_install(self) -> None:
+            calls.append("install")
             return None
 
         def daemon_start(self) -> DaemonStatusResult:
+            calls.append("start")
             return DaemonStatusResult(
                 running=True,
                 pid=200,
@@ -809,6 +813,7 @@ def test_main_dispatches_daemon_commands(monkeypatch, capsys):
             )
 
         def daemon_stop(self) -> DaemonStatusResult:
+            calls.append("stop")
             return DaemonStatusResult(
                 running=False,
                 pid=None,
@@ -817,11 +822,30 @@ def test_main_dispatches_daemon_commands(monkeypatch, capsys):
             )
 
         def daemon_status(self) -> DaemonStatusResult:
+            calls.append("status")
             return DaemonStatusResult(
                 running=False,
                 pid=300,
                 pid_file_exists=True,
                 stale_pid_file=True,
+            )
+
+        def daemon_enable(self) -> DaemonStatusResult:
+            calls.append("enable")
+            return DaemonStatusResult(
+                running=True,
+                pid=400,
+                pid_file_exists=True,
+                stale_pid_file=False,
+            )
+
+        def daemon_disable(self) -> DaemonStatusResult:
+            calls.append("disable")
+            return DaemonStatusResult(
+                running=False,
+                pid=None,
+                pid_file_exists=False,
+                stale_pid_file=False,
             )
 
     monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
@@ -841,6 +865,13 @@ def test_main_dispatches_daemon_commands(monkeypatch, capsys):
         "pid file: stale",
         "last pid: 300",
     ]
+
+    assert main(["daemon", "enable"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["daemon: running", "pid: 400"]
+
+    assert main(["daemon", "disable"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["daemon: stopped", "pid file: missing"]
+    assert calls == ["install", "start", "stop", "status", "enable", "disable"]
 
 
 def test_main_dispatches_auto_commands(monkeypatch, capsys):

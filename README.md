@@ -64,9 +64,13 @@ Deletes a stored alias snapshot. Removing the active alias is refused.
 
 Initializes automation state storage and daemon directories under `~/.codex-switch/`.
 
+### `codex-switch daemon enable|disable`
+
+Installs or removes a user-level `systemd` service for `codex-switchd`. `enable` writes `~/.config/systemd/user/codex-switchd.service`, reloads the user daemon, and enables the service to start automatically on login.
+
 ### `codex-switch daemon start|stop|status`
 
-Manages the background `codex-switchd` process used for automation monitoring.
+Manages the background `codex-switchd` process used for automation monitoring. When the user-level `systemd` service is installed, these commands use `systemctl --user`.
 
 ### `codex-switch auto status`
 
@@ -155,7 +159,7 @@ Start automation daemon management:
 
 ```bash
 codex-switch daemon install
-codex-switch daemon start
+codex-switch daemon enable
 codex-switch daemon status
 ```
 

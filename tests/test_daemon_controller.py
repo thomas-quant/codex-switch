@@ -99,3 +99,102 @@ def test_daemon_status_marks_stale_pid_file_when_content_is_invalid(tmp_path):
     assert status.running is False
     assert status.pid_file_exists is True
     assert status.stale_pid_file is True
+
+
+def test_daemon_enable_writes_systemd_unit_and_enables_service(tmp_path, monkeypatch):
+    paths = resolve_paths(tmp_path)
+    controller = DaemonController(paths)
+    systemctl_calls: list[list[str]] = []
+
+    monkeypatch.setattr("codex_switch.daemon_controller.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(args, **kwargs):
+        systemctl_calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("codex_switch.daemon_controller.subprocess.run", fake_run)
+
+    status = controller.enable()
+
+    unit_file = paths.home / ".config" / "systemd" / "user" / "codex-switchd.service"
+    assert unit_file.exists()
+    contents = unit_file.read_text(encoding="utf-8")
+    assert "ExecStart=/usr/bin/codex-switchd run --home" in contents
+    assert str(paths.home) in contents
+    assert systemctl_calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", "codex-switchd.service"],
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "codex-switchd.service",
+            "--property",
+            "ActiveState",
+            "--property",
+            "MainPID",
+            "--property",
+            "UnitFileState",
+            "--value",
+        ],
+    ]
+    assert status.running is False
+
+
+def test_daemon_disable_stops_and_disables_systemd_service(tmp_path, monkeypatch):
+    paths = resolve_paths(tmp_path)
+    unit_file = paths.home / ".config" / "systemd" / "user" / "codex-switchd.service"
+    unit_file.parent.mkdir(parents=True, exist_ok=True)
+    unit_file.write_text("[Unit]\nDescription=test\n", encoding="utf-8")
+    controller = DaemonController(paths)
+    systemctl_calls: list[list[str]] = []
+
+    monkeypatch.setattr("codex_switch.daemon_controller.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(args, **kwargs):
+        systemctl_calls.append(args)
+        if args[2] == "show":
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="inactive\n0\ndisabled\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("codex_switch.daemon_controller.subprocess.run", fake_run)
+
+    status = controller.disable()
+
+    assert systemctl_calls == [
+        ["systemctl", "--user", "disable", "--now", "codex-switchd.service"],
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "codex-switchd.service",
+            "--property",
+            "ActiveState",
+            "--property",
+            "MainPID",
+            "--property",
+            "UnitFileState",
+            "--value",
+        ],
+    ]
+    assert status.running is False
+
+
+def test_daemon_status_uses_systemd_when_unit_file_exists(tmp_path, monkeypatch):
+    paths = resolve_paths(tmp_path)
+    unit_file = paths.home / ".config" / "systemd" / "user" / "codex-switchd.service"
+    unit_file.parent.mkdir(parents=True, exist_ok=True)
+    unit_file.write_text("[Unit]\nDescription=test\n", encoding="utf-8")
+    controller = DaemonController(paths)
+
+    monkeypatch.setattr("codex_switch.daemon_controller.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="active\n4321\nenabled\n", stderr="")
+
+    monkeypatch.setattr("codex_switch.daemon_controller.subprocess.run", fake_run)
+
+    status = controller.status()
+
+    assert status.running is True
+    assert status.pid == 4321

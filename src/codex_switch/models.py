@@ -57,6 +57,8 @@ class DaemonStatusResult:
     pid: int | None
     pid_file_exists: bool
     stale_pid_file: bool
+    managed_by: str = "pidfile"
+    service_enabled: bool | None = None
 
 
 @dataclass(slots=True, frozen=True)
