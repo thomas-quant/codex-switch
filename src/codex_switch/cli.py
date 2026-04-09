@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from contextlib import contextmanager
+import os
+from pathlib import Path
+import tempfile
 
 from codex_switch.automation_db import SwitchEventRecord
 from codex_switch.accounts import AccountStore
+from codex_switch.automation_rpc import CodexRpcClient
 from codex_switch.config import load_app_config
 from codex_switch.errors import CodexSwitchError
+from codex_switch.fs import atomic_write_bytes
 from codex_switch.manager import CodexSwitchManager
 from codex_switch.models import (
     AliasListEntry,
@@ -59,24 +65,32 @@ def build_default_manager() -> CodexSwitchManager:
     paths = resolve_paths()
     accounts = AccountStore(paths.accounts_dir)
     state = StateStore(paths.state_file)
-    pty_source = CodexCliPtySource()
 
     def probe_alias_metadata(alias: str):
-        rpc_source = AppServerRpcSource()
-        try:
-            poll = rpc_source.poll(active_alias=alias)
-        except AutomationSourceUnavailableError:
-            observed_at = utc_now()
-            snapshot = pty_source.probe(alias=alias, observed_at=observed_at)
-            if snapshot is None:
-                return None
-            return AliasTelemetryObservation(
-                account_email=None,
-                account_plan_type=snapshot.plan_type,
-                account_fingerprint=None,
-                observed_at=snapshot.observed_at,
-                rate_limits=(snapshot,),
+        auth_bytes = _load_probe_auth_bytes(alias=alias, accounts=accounts, paths=paths, state=state)
+        with _isolated_codex_env(auth_bytes) as env:
+            rpc_source = AppServerRpcSource(
+                client_factory=lambda: CodexRpcClient.launch_default(env=env)
             )
+            try:
+                poll = rpc_source.poll(active_alias=alias)
+            except AutomationSourceUnavailableError:
+                observed_at = utc_now()
+                snapshot = CodexCliPtySource(env=env).probe(alias=alias, observed_at=observed_at)
+                if snapshot is None:
+                    return None
+                return AliasTelemetryObservation(
+                    account_email=None,
+                    account_plan_type=snapshot.plan_type,
+                    account_fingerprint=None,
+                    observed_at=snapshot.observed_at,
+                    rate_limits=(snapshot,),
+                )
+            finally:
+                client = getattr(rpc_source, "_client", None)
+                close = None if client is None else getattr(client, "close", None)
+                if callable(close):
+                    close()
 
         account_identity = poll.account_identity
         plan_type = None if account_identity is None else account_identity.plan_type
@@ -105,6 +119,36 @@ def build_default_manager() -> CodexSwitchManager:
         login_runner=run_codex_login,
         alias_metadata_probe=probe_alias_metadata,
     )
+
+
+def _load_probe_auth_bytes(
+    *,
+    alias: str,
+    accounts: AccountStore,
+    paths,
+    state: StateStore,
+) -> bytes:
+    current = state.load()
+    if alias == current.active_alias and paths.live_auth_file.exists():
+        return paths.live_auth_file.read_bytes()
+    return accounts.read_snapshot(alias)
+
+
+@contextmanager
+def _isolated_codex_env(auth_bytes: bytes):
+    with tempfile.TemporaryDirectory(prefix="codex-switch-probe-") as raw_home:
+        home = Path(raw_home)
+        codex_root = home / ".codex"
+        atomic_write_bytes(
+            codex_root / "auth.json",
+            auth_bytes,
+            mode=0o600,
+            root=home,
+        )
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["CODEX_HOME"] = str(codex_root)
+        yield env
 
 
 def format_alias_lines(

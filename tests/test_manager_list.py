@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from codex_switch.accounts import AccountStore
@@ -37,6 +39,15 @@ def make_manager(tmp_path, *, alias_metadata_probe=None, initialize_automation: 
         alias_metadata_probe=alias_metadata_probe,
     )
     return manager, paths, accounts, state, store, guard
+
+
+def make_observed_at(*, minutes_ago: int) -> str:
+    return (
+        (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def test_list_aliases_uses_cached_plan_types(tmp_path):
@@ -246,7 +257,7 @@ def test_list_aliases_refreshes_missing_plan_type_for_inactive_alias_and_restore
     ]
     assert active_alias == "work"
     assert probe_calls == ["backup", "work"]
-    assert guard.calls == 1
+    assert guard.calls == 0
     assert paths.live_auth_file.read_bytes() == b'{"token":"live-work"}'
     assert state.load() == AppState(active_alias="work", updated_at="2026-04-05T00:00:00Z")
 
@@ -279,7 +290,7 @@ def test_list_aliases_preserves_dirty_active_snapshot_during_inactive_refresh(tm
     assert paths.live_auth_file.read_bytes() == b'{"token":"live-work"}'
 
 
-def test_list_aliases_raises_when_inactive_probe_cleanup_fails(tmp_path, monkeypatch):
+def test_list_aliases_does_not_touch_live_auth_when_inactive_probe_succeeds(tmp_path, monkeypatch):
     def alias_metadata_probe(alias: str) -> AliasTelemetryObservation | None:
         if alias != "backup":
             return None
@@ -301,19 +312,41 @@ def test_list_aliases_raises_when_inactive_probe_cleanup_fails(tmp_path, monkeyp
     paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
     paths.live_auth_file.write_bytes(b'{"token":"live-work"}')
 
-    monkeypatch.setattr(
-        manager,
-        "_restore_previous_live_auth",
-        lambda _previous_state, _backup_path, _clear_unmanaged_live_auth, prefer_live_backup=False: (
-            (_ for _ in ()).throw(RuntimeError("restore failed"))
+    restore_calls = 0
+
+    def failing_restore(
+        _previous_state,
+        _backup_path,
+        _clear_unmanaged_live_auth,
+        prefer_live_backup: bool = False,
+    ):
+        nonlocal restore_calls
+        restore_calls += 1
+        raise RuntimeError("restore failed")
+
+    monkeypatch.setattr(manager, "_restore_previous_live_auth", failing_restore)
+
+    entries, active_alias = manager.list_aliases()
+
+    assert entries == [
+        AliasListEntry(
+            alias="backup",
+            plan_type="pro",
+            five_hour_left_percent=None,
+            weekly_left_percent=None,
         ),
-    )
+        AliasListEntry(
+            alias="work",
+            plan_type=None,
+            five_hour_left_percent=None,
+            weekly_left_percent=None,
+        ),
+    ]
+    assert active_alias == "work"
+    assert restore_calls == 0
 
-    with pytest.raises(RuntimeError, match="restore failed"):
-        manager.list_aliases()
 
-
-def test_list_aliases_skips_inactive_refresh_when_mutation_is_unsafe(tmp_path):
+def test_list_aliases_refreshes_inactive_plan_type_without_mutation_guard(tmp_path):
     probe_calls: list[str] = []
 
     def alias_metadata_probe(alias: str) -> AliasTelemetryObservation | None:
@@ -343,13 +376,13 @@ def test_list_aliases_skips_inactive_refresh_when_mutation_is_unsafe(tmp_path):
     assert entries == [
         AliasListEntry(
             alias="backup",
-            plan_type=None,
+            plan_type="pro",
             five_hour_left_percent=None,
             weekly_left_percent=None,
         )
     ]
     assert active_alias is None
-    assert probe_calls == []
+    assert probe_calls == ["backup"]
 
 
 def test_list_aliases_ignores_probe_failures_and_keeps_plain_alias(tmp_path):
@@ -377,8 +410,47 @@ def test_list_aliases_ignores_probe_failures_and_keeps_plain_alias(tmp_path):
     assert active_alias == "backup"
 
 
-def test_list_aliases_includes_cached_remaining_usage(tmp_path):
-    manager, _paths, accounts, state, store, _guard = make_manager(tmp_path)
+def test_list_aliases_refreshes_stale_usage_for_active_alias(tmp_path):
+    probe_calls: list[str] = []
+    stale_observed_at = make_observed_at(minutes_ago=30)
+    fresh_observed_at = make_observed_at(minutes_ago=1)
+
+    def alias_metadata_probe(alias: str) -> AliasTelemetryObservation | None:
+        probe_calls.append(alias)
+        return AliasTelemetryObservation(
+            account_email="beta@example.com",
+            account_plan_type="plus",
+            account_fingerprint="fp-beta",
+            observed_at=fresh_observed_at,
+            rate_limits=(
+                RateLimitSnapshot(
+                    alias=alias,
+                    limit_id="codex",
+                    limit_name="codex",
+                    observed_via=UsageSource.RPC,
+                    plan_type="plus",
+                    primary_window=RateLimitWindow(
+                        used_percent=12,
+                        resets_at="2026-04-06T05:00:00Z",
+                        window_duration_mins=300,
+                    ),
+                    secondary_window=RateLimitWindow(
+                        used_percent=88,
+                        resets_at="2026-04-10T00:00:00Z",
+                        window_duration_mins=10080,
+                    ),
+                    credits_has_credits=None,
+                    credits_unlimited=None,
+                    credits_balance=None,
+                    observed_at=fresh_observed_at,
+                ),
+            ),
+        )
+
+    manager, _paths, accounts, state, store, _guard = make_manager(
+        tmp_path,
+        alias_metadata_probe=alias_metadata_probe,
+    )
     accounts.write_snapshot_from_bytes("beta", b"{}")
     store.reconcile_aliases(["beta"])
     store.record_alias_observation(
@@ -386,7 +458,7 @@ def test_list_aliases_includes_cached_remaining_usage(tmp_path):
         account_email="beta@example.com",
         account_plan_type="plus",
         account_fingerprint="fp-beta",
-        observed_at="2026-04-06T00:00:00Z",
+        observed_at=stale_observed_at,
     )
     store.upsert_rate_limit(
         RateLimitSnapshot(
@@ -408,7 +480,209 @@ def test_list_aliases_includes_cached_remaining_usage(tmp_path):
             credits_has_credits=None,
             credits_unlimited=None,
             credits_balance=None,
-            observed_at="2026-04-06T00:00:00Z",
+            observed_at=stale_observed_at,
+        )
+    )
+    state.save(AppState(active_alias="beta", updated_at="2026-04-06T00:00:00Z"))
+
+    entries, active_alias = manager.list_aliases()
+
+    assert entries == [
+        AliasListEntry(
+            alias="beta",
+            plan_type="plus",
+            five_hour_left_percent=88,
+            weekly_left_percent=12,
+        )
+    ]
+    assert active_alias == "beta"
+    assert probe_calls == ["beta"]
+
+
+def test_list_aliases_hides_stale_usage_when_refresh_fails(tmp_path):
+    stale_observed_at = make_observed_at(minutes_ago=30)
+
+    def alias_metadata_probe(_alias: str) -> AliasTelemetryObservation | None:
+        raise RuntimeError("rpc unavailable")
+
+    manager, _paths, accounts, state, store, _guard = make_manager(
+        tmp_path,
+        alias_metadata_probe=alias_metadata_probe,
+    )
+    accounts.write_snapshot_from_bytes("beta", b"{}")
+    store.reconcile_aliases(["beta"])
+    store.record_alias_observation(
+        alias="beta",
+        account_email="beta@example.com",
+        account_plan_type="plus",
+        account_fingerprint="fp-beta",
+        observed_at=stale_observed_at,
+    )
+    store.upsert_rate_limit(
+        RateLimitSnapshot(
+            alias="beta",
+            limit_id="codex",
+            limit_name="codex",
+            observed_via=UsageSource.RPC,
+            plan_type="plus",
+            primary_window=RateLimitWindow(
+                used_percent=58,
+                resets_at="2026-04-06T05:00:00Z",
+                window_duration_mins=300,
+            ),
+            secondary_window=RateLimitWindow(
+                used_percent=29,
+                resets_at="2026-04-10T00:00:00Z",
+                window_duration_mins=10080,
+            ),
+            credits_has_credits=None,
+            credits_unlimited=None,
+            credits_balance=None,
+            observed_at=stale_observed_at,
+        )
+    )
+    state.save(AppState(active_alias="beta", updated_at="2026-04-06T00:00:00Z"))
+
+    entries, active_alias = manager.list_aliases()
+
+    assert entries == [
+        AliasListEntry(
+            alias="beta",
+            plan_type="plus",
+            five_hour_left_percent=None,
+            weekly_left_percent=None,
+        )
+    ]
+    assert active_alias == "beta"
+
+
+def test_list_aliases_refreshes_stale_inactive_usage_without_mutation_guard(tmp_path):
+    probe_calls: list[str] = []
+    stale_observed_at = make_observed_at(minutes_ago=30)
+    fresh_observed_at = make_observed_at(minutes_ago=1)
+
+    def alias_metadata_probe(alias: str) -> AliasTelemetryObservation | None:
+        probe_calls.append(alias)
+        return AliasTelemetryObservation(
+            account_email="backup@example.com",
+            account_plan_type="pro",
+            account_fingerprint="fp-backup",
+            observed_at=fresh_observed_at,
+            rate_limits=(
+                RateLimitSnapshot(
+                    alias=alias,
+                    limit_id="codex",
+                    limit_name="codex",
+                    observed_via=UsageSource.RPC,
+                    plan_type="pro",
+                    primary_window=RateLimitWindow(
+                        used_percent=12,
+                        resets_at="2026-04-06T05:00:00Z",
+                        window_duration_mins=300,
+                    ),
+                    secondary_window=RateLimitWindow(
+                        used_percent=88,
+                        resets_at="2026-04-10T00:00:00Z",
+                        window_duration_mins=10080,
+                    ),
+                    credits_has_credits=None,
+                    credits_unlimited=None,
+                    credits_balance=None,
+                    observed_at=fresh_observed_at,
+                ),
+            ),
+        )
+
+    manager, _paths, accounts, state, store, _guard = make_manager(
+        tmp_path,
+        alias_metadata_probe=alias_metadata_probe,
+    )
+
+    def failing_guard() -> None:
+        raise RuntimeError("codex is running")
+
+    manager._ensure_safe_to_mutate = failing_guard
+    accounts.write_snapshot_from_bytes("backup", b"{}")
+    store.reconcile_aliases(["backup"])
+    store.record_alias_observation(
+        alias="backup",
+        account_email="backup@example.com",
+        account_plan_type="pro",
+        account_fingerprint="fp-backup",
+        observed_at=stale_observed_at,
+    )
+    store.upsert_rate_limit(
+        RateLimitSnapshot(
+            alias="backup",
+            limit_id="codex",
+            limit_name="codex",
+            observed_via=UsageSource.RPC,
+            plan_type="pro",
+            primary_window=RateLimitWindow(
+                used_percent=58,
+                resets_at="2026-04-06T05:00:00Z",
+                window_duration_mins=300,
+            ),
+            secondary_window=RateLimitWindow(
+                used_percent=29,
+                resets_at="2026-04-10T00:00:00Z",
+                window_duration_mins=10080,
+            ),
+            credits_has_credits=None,
+            credits_unlimited=None,
+            credits_balance=None,
+            observed_at=stale_observed_at,
+        )
+    )
+    state.save(AppState(active_alias=None, updated_at="2026-04-05T00:00:00Z"))
+
+    entries, active_alias = manager.list_aliases()
+
+    assert entries == [
+        AliasListEntry(
+            alias="backup",
+            plan_type="pro",
+            five_hour_left_percent=88,
+            weekly_left_percent=12,
+        )
+    ]
+    assert active_alias is None
+    assert probe_calls == ["backup"]
+
+
+def test_list_aliases_includes_cached_remaining_usage(tmp_path):
+    observed_at = make_observed_at(minutes_ago=1)
+    manager, _paths, accounts, state, store, _guard = make_manager(tmp_path)
+    accounts.write_snapshot_from_bytes("beta", b"{}")
+    store.reconcile_aliases(["beta"])
+    store.record_alias_observation(
+        alias="beta",
+        account_email="beta@example.com",
+        account_plan_type="plus",
+        account_fingerprint="fp-beta",
+        observed_at=observed_at,
+    )
+    store.upsert_rate_limit(
+        RateLimitSnapshot(
+            alias="beta",
+            limit_id="codex",
+            limit_name="codex",
+            observed_via=UsageSource.RPC,
+            plan_type="plus",
+            primary_window=RateLimitWindow(
+                used_percent=58,
+                resets_at="2026-04-06T05:00:00Z",
+                window_duration_mins=300,
+            ),
+            secondary_window=RateLimitWindow(
+                used_percent=29,
+                resets_at="2026-04-10T00:00:00Z",
+                window_duration_mins=10080,
+            ),
+            credits_has_credits=None,
+            credits_unlimited=None,
+            credits_balance=None,
+            observed_at=observed_at,
         )
     )
     state.save(AppState(active_alias="beta", updated_at="2026-04-06T00:00:00Z"))
@@ -427,6 +701,8 @@ def test_list_aliases_includes_cached_remaining_usage(tmp_path):
 
 
 def test_list_aliases_prefers_newest_rate_limit_snapshot_over_older_codex_snapshot(tmp_path):
+    older_observed_at = make_observed_at(minutes_ago=2)
+    newer_observed_at = make_observed_at(minutes_ago=1)
     manager, _paths, accounts, state, store, _guard = make_manager(tmp_path)
     accounts.write_snapshot_from_bytes("beta", b"{}")
     store.reconcile_aliases(["beta"])
@@ -435,7 +711,7 @@ def test_list_aliases_prefers_newest_rate_limit_snapshot_over_older_codex_snapsh
         account_email="beta@example.com",
         account_plan_type="plus",
         account_fingerprint="fp-beta",
-        observed_at="2026-04-06T00:00:00Z",
+        observed_at=newer_observed_at,
     )
     store.upsert_rate_limit(
         RateLimitSnapshot(
@@ -457,7 +733,7 @@ def test_list_aliases_prefers_newest_rate_limit_snapshot_over_older_codex_snapsh
             credits_has_credits=None,
             credits_unlimited=None,
             credits_balance=None,
-            observed_at="2026-04-06T00:00:00Z",
+            observed_at=older_observed_at,
         )
     )
     store.upsert_rate_limit(
@@ -480,7 +756,7 @@ def test_list_aliases_prefers_newest_rate_limit_snapshot_over_older_codex_snapsh
             credits_has_credits=None,
             credits_unlimited=None,
             credits_balance=None,
-            observed_at="2026-04-06T00:05:00Z",
+            observed_at=newer_observed_at,
         )
     )
     state.save(AppState(active_alias="beta", updated_at="2026-04-06T00:00:00Z"))
@@ -499,6 +775,7 @@ def test_list_aliases_prefers_newest_rate_limit_snapshot_over_older_codex_snapsh
 
 
 def test_list_aliases_prefers_codex_snapshot_when_same_timestamp_snapshots_exist(tmp_path):
+    observed_at = make_observed_at(minutes_ago=1)
     manager, _paths, accounts, state, store, _guard = make_manager(tmp_path)
     accounts.write_snapshot_from_bytes("beta", b"{}")
     store.reconcile_aliases(["beta"])
@@ -507,7 +784,7 @@ def test_list_aliases_prefers_codex_snapshot_when_same_timestamp_snapshots_exist
         account_email="beta@example.com",
         account_plan_type="plus",
         account_fingerprint="fp-beta",
-        observed_at="2026-04-06T00:00:00Z",
+        observed_at=observed_at,
     )
     store.upsert_rate_limit(
         RateLimitSnapshot(
@@ -529,7 +806,7 @@ def test_list_aliases_prefers_codex_snapshot_when_same_timestamp_snapshots_exist
             credits_has_credits=None,
             credits_unlimited=None,
             credits_balance=None,
-            observed_at="2026-04-06T00:00:00Z",
+            observed_at=observed_at,
         )
     )
     store.upsert_rate_limit(
@@ -552,7 +829,7 @@ def test_list_aliases_prefers_codex_snapshot_when_same_timestamp_snapshots_exist
             credits_has_credits=None,
             credits_unlimited=None,
             credits_balance=None,
-            observed_at="2026-04-06T00:00:00Z",
+            observed_at=observed_at,
         )
     )
     state.save(AppState(active_alias="beta", updated_at="2026-04-06T00:00:00Z"))
@@ -571,6 +848,7 @@ def test_list_aliases_prefers_codex_snapshot_when_same_timestamp_snapshots_exist
 
 
 def test_list_aliases_uses_cached_rate_limit_plan_type_when_alias_metadata_is_missing(tmp_path):
+    observed_at = make_observed_at(minutes_ago=1)
     manager, _paths, accounts, state, store, _guard = make_manager(tmp_path)
     accounts.write_snapshot_from_bytes("beta", b"{}")
     store.upsert_rate_limit(
@@ -593,7 +871,7 @@ def test_list_aliases_uses_cached_rate_limit_plan_type_when_alias_metadata_is_mi
             credits_has_credits=None,
             credits_unlimited=None,
             credits_balance=None,
-            observed_at="2026-04-06T00:12:00Z",
+            observed_at=observed_at,
         )
     )
     state.save(AppState(active_alias="beta", updated_at="2026-04-06T00:00:00Z"))
@@ -614,12 +892,14 @@ def test_list_aliases_uses_cached_rate_limit_plan_type_when_alias_metadata_is_mi
 
 
 def test_list_aliases_refreshes_missing_usage_and_persists_rate_limits(tmp_path):
+    observed_at = make_observed_at(minutes_ago=1)
+
     def alias_metadata_probe(alias: str) -> AliasTelemetryObservation | None:
         return AliasTelemetryObservation(
             account_email=f"{alias}@example.com",
             account_plan_type="plus",
             account_fingerprint=f"fp-{alias}",
-            observed_at="2026-04-06T00:10:00Z",
+            observed_at=observed_at,
             rate_limits=(
                 RateLimitSnapshot(
                     alias=alias,
@@ -640,7 +920,7 @@ def test_list_aliases_refreshes_missing_usage_and_persists_rate_limits(tmp_path)
                     credits_has_credits=None,
                     credits_unlimited=None,
                     credits_balance=None,
-                    observed_at="2026-04-06T00:10:00Z",
+                    observed_at=observed_at,
                 ),
             ),
         )
@@ -670,12 +950,14 @@ def test_list_aliases_refreshes_missing_usage_and_persists_rate_limits(tmp_path)
 
 
 def test_list_aliases_refreshes_usage_without_plan_type_and_persists_rate_limits(tmp_path):
+    observed_at = make_observed_at(minutes_ago=1)
+
     def alias_metadata_probe(alias: str) -> AliasTelemetryObservation | None:
         return AliasTelemetryObservation(
             account_email=None,
             account_plan_type=None,
             account_fingerprint=None,
-            observed_at="2026-04-06T00:12:00Z",
+            observed_at=observed_at,
             rate_limits=(
                 RateLimitSnapshot(
                     alias=alias,
@@ -696,7 +978,7 @@ def test_list_aliases_refreshes_usage_without_plan_type_and_persists_rate_limits
                     credits_has_credits=None,
                     credits_unlimited=None,
                     credits_balance=None,
-                    observed_at="2026-04-06T00:12:00Z",
+                    observed_at=observed_at,
                 ),
             ),
         )
@@ -728,6 +1010,8 @@ def test_list_aliases_refreshes_usage_without_plan_type_and_persists_rate_limits
 
 
 def test_list_aliases_refreshes_missing_usage_for_inactive_alias_and_restores_auth(tmp_path):
+    observed_at = make_observed_at(minutes_ago=1)
+
     def alias_metadata_probe(alias: str) -> AliasTelemetryObservation | None:
         if alias != "backup":
             return None
@@ -735,7 +1019,7 @@ def test_list_aliases_refreshes_missing_usage_for_inactive_alias_and_restores_au
             account_email="backup@example.com",
             account_plan_type="pro",
             account_fingerprint="fp-backup",
-            observed_at="2026-04-06T00:15:00Z",
+            observed_at=observed_at,
             rate_limits=(
                 RateLimitSnapshot(
                     alias="backup",
@@ -756,7 +1040,7 @@ def test_list_aliases_refreshes_missing_usage_for_inactive_alias_and_restores_au
                     credits_has_credits=None,
                     credits_unlimited=None,
                     credits_balance=None,
-                    observed_at="2026-04-06T00:15:00Z",
+                    observed_at=observed_at,
                 ),
             ),
         )
@@ -789,5 +1073,5 @@ def test_list_aliases_refreshes_missing_usage_for_inactive_alias_and_restores_au
         ),
     ]
     assert active_alias == "work"
-    assert guard.calls == 1
+    assert guard.calls == 0
     assert paths.live_auth_file.read_bytes() == b'{"token":"live-work"}'

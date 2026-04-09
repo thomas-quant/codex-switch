@@ -168,8 +168,14 @@ class AppServerRpcSource:
 
 
 class CodexCliPtySource:
-    def __init__(self, *, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 10.0,
+        env: dict[str, str] | None = None,
+    ) -> None:
         self._timeout_seconds = timeout_seconds
+        self._env = None if env is None else dict(env)
 
     def probe(self, *, alias: str, observed_at: str) -> RateLimitSnapshot | None:
         try:
@@ -180,6 +186,7 @@ class CodexCliPtySource:
                 text=True,
                 timeout=self._timeout_seconds,
                 check=False,
+                env=self._env,
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
