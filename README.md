@@ -18,6 +18,14 @@ python3 -m pipx ensurepath
 python3 -m pipx install --editable .
 ```
 
+On PEP 668 managed systems such as Ubuntu 24.04, install `pipx` with your OS package manager first:
+
+```bash
+sudo apt install -y pipx
+pipx ensurepath
+pipx install --editable .
+```
+
 If you are developing on the repository and want the traditional editable environment with test dependencies, use a local virtual environment instead:
 
 ```bash
@@ -34,9 +42,9 @@ Captures a fresh `codex login` session into a named snapshot. The existing activ
 
 ### `codex-switch list [--refresh]`
 
-Lists configured aliases. The active alias is marked with `*`. `list` shows cached account plan type plus remaining 5-hour and weekly usage when telemetry is available. Missing usage values render as `?`.
+Lists configured aliases. The active alias is marked with `*`. Plain `list` shows cached account plan type plus remaining 5-hour and weekly usage when telemetry is available. Missing usage values render as `?`.
 
-Pass `--refresh` to re-probe aliases whose telemetry is missing or older than the freshness window before printing the list.
+Pass `--refresh` to re-probe aliases whose telemetry is missing or older than the 15-minute freshness window before printing the list. Refresh probes run in isolated temporary Codex homes built from each alias snapshot, so they do not rotate your live `~/.codex/auth.json`.
 
 Display mode is controlled by `~/.codex-switch/config.json`:
 
@@ -66,7 +74,7 @@ Initializes automation state storage and daemon directories under `~/.codex-swit
 
 ### `codex-switch daemon enable|disable`
 
-Installs or removes a user-level `systemd` service for `codex-switchd`. `enable` writes `~/.config/systemd/user/codex-switchd.service`, reloads the user daemon, and enables the service to start automatically on login.
+Manages a user-level `systemd` service for `codex-switchd`. `enable` writes `~/.config/systemd/user/codex-switchd.service`, reloads the user daemon, and enables the service to start automatically on login. `disable` stops and disables that service.
 
 ### `codex-switch daemon start|stop|status`
 
@@ -95,6 +103,7 @@ Check the current state first:
 ```bash
 codex-switch status
 codex-switch list
+codex-switch list --refresh
 ```
 
 If `codex-switch` shows `active alias: none` but your live `~/.codex/auth.json` already exists, bootstrap that current login once before adding the others:
@@ -163,6 +172,13 @@ codex-switch daemon enable
 codex-switch daemon status
 ```
 
+Disable the login-time service again if you no longer want automatic startup:
+
+```bash
+codex-switch daemon disable
+codex-switch daemon status
+```
+
 Inspect automation telemetry and decisions:
 
 ```bash
@@ -180,5 +196,7 @@ codex-switch remove epsilon
 ## Important behavior
 
 `codex-switch` does not create isolated Codex homes. It only rotates `~/.codex/auth.json` so account login can change while the rest of the Codex directory stays shared.
+
+`codex-switch list --refresh` is the exception for telemetry probing: it stages each alias in an isolated temporary Codex home so usage can be refreshed without mutating the live auth file.
 
 For safety, mutating commands such as `add`, `use`, and `remove` refuse to run while Codex is active.
