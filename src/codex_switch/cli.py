@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     daemon_parser = subparsers.add_parser("daemon")
     daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", required=True)
-    for name in ("install", "start", "stop", "status"):
+    for name in ("install", "start", "stop", "status", "enable", "disable"):
         daemon_subparsers.add_parser(name)
 
     auto_parser = subparsers.add_parser("auto")
@@ -234,6 +234,14 @@ def format_status_lines(status: StatusResult) -> list[str]:
 
 
 def format_daemon_status_lines(status: DaemonStatusResult) -> list[str]:
+    if status.managed_by == "systemd":
+        lines = ["daemon: running" if status.running else "daemon: stopped", "service: codex-switchd.service"]
+        if status.service_enabled is not None:
+            lines.append(f"enabled: {'yes' if status.service_enabled else 'no'}")
+        if status.pid is not None:
+            lines.append(f"pid: {status.pid}")
+        return lines
+
     if status.running:
         return [
             "daemon: running",
@@ -336,6 +344,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(*format_daemon_status_lines(manager.daemon_stop()), sep="\n")
             elif args.daemon_command == "status":
                 print(*format_daemon_status_lines(manager.daemon_status()), sep="\n")
+            elif args.daemon_command == "enable":
+                print(*format_daemon_status_lines(manager.daemon_enable()), sep="\n")
+            elif args.daemon_command == "disable":
+                print(*format_daemon_status_lines(manager.daemon_disable()), sep="\n")
             else:
                 parser.error(f"unknown daemon command: {args.daemon_command}")
         elif args.command == "auto":

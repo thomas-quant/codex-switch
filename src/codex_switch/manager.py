@@ -289,6 +289,13 @@ class CodexSwitchManager:
     def daemon_status(self) -> DaemonStatusResult:
         return self._daemon_controller.status()
 
+    def daemon_enable(self) -> DaemonStatusResult:
+        self._automation.initialize()
+        return self._daemon_controller.enable()
+
+    def daemon_disable(self) -> DaemonStatusResult:
+        return self._daemon_controller.disable()
+
     def auto_status(self) -> AutoStatusResult:
         self._automation.initialize()
         current = self._state.load()

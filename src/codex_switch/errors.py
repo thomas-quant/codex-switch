@@ -59,3 +59,7 @@ class DaemonAlreadyRunningError(CodexSwitchError):
 
 class DaemonNotRunningError(CodexSwitchError):
     pass
+
+
+class DaemonControlError(CodexSwitchError):
+    pass
