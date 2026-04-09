@@ -20,11 +20,30 @@ from codex_switch.models import (
     AutoSourceResult,
     AutoStatusResult,
     AppConfig,
+    AppState,
     DaemonStatusResult,
     ListFormat,
     LoginMode,
     StatusResult,
 )
+from codex_switch.paths import resolve_paths
+
+
+class ProbeStateStore:
+    def __init__(self, _path, *, active_alias: str | None = "beta") -> None:
+        self._active_alias = active_alias
+
+    def load(self) -> AppState:
+        return AppState(active_alias=self._active_alias, updated_at="2026-04-06T00:00:00Z")
+
+
+class ProbeAccounts:
+    def __init__(self, _path) -> None:
+        self.read_snapshot_calls: list[str] = []
+
+    def read_snapshot(self, alias: str) -> bytes:
+        self.read_snapshot_calls.append(alias)
+        return f'{{"alias":"{alias}"}}'.encode()
 
 
 def test_build_parser_registers_expected_subcommands():
@@ -89,16 +108,17 @@ def test_build_default_manager_threads_login_mode_through_runner(monkeypatch):
     assert callable(captured["alias_metadata_probe"])
 
 
-def test_build_default_manager_uses_fresh_rpc_source_per_alias_probe(monkeypatch):
+def test_build_default_manager_uses_fresh_rpc_source_per_alias_probe(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     rpc_instances: list[int] = []
+    accounts = ProbeAccounts(object())
 
     class FakeManager:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
     class FakeRpcSource:
-        def __init__(self):
+        def __init__(self, *args, **kwargs):
             rpc_instances.append(len(rpc_instances) + 1)
             self.instance_id = rpc_instances[-1]
 
@@ -118,12 +138,9 @@ def test_build_default_manager_uses_fresh_rpc_source_per_alias_probe(monkeypatch
             raise AssertionError("PTY fallback should not be used")
 
     monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
-    monkeypatch.setattr(
-        "codex_switch.cli.resolve_paths",
-        lambda: SimpleNamespace(accounts_dir=object(), state_file=object()),
-    )
-    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: object())
-    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: object())
+    monkeypatch.setattr("codex_switch.cli.resolve_paths", lambda: resolve_paths(tmp_path))
+    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: accounts)
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: ProbeStateStore(_path))
     monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
     monkeypatch.setattr("codex_switch.codex_login.run_codex_login", lambda _login_mode=LoginMode.BROWSER: None)
     monkeypatch.setattr("codex_switch.daemon_runtime.AppServerRpcSource", FakeRpcSource)
@@ -140,7 +157,7 @@ def test_build_default_manager_uses_fresh_rpc_source_per_alias_probe(monkeypatch
     assert second.account_plan_type == "plan-2"
 
 
-def test_build_default_manager_probe_returns_rate_limits_without_account_identity(monkeypatch):
+def test_build_default_manager_probe_returns_rate_limits_without_account_identity(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     snapshots = [
         RateLimitSnapshot(
@@ -157,12 +174,16 @@ def test_build_default_manager_probe_returns_rate_limits_without_account_identit
             observed_at="2026-04-06T00:00:00Z",
         )
     ]
+    accounts = ProbeAccounts(object())
 
     class FakeManager:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
     class FakeRpcSource:
+        def __init__(self, *args, **kwargs):
+            pass
+
         def poll(self, *, active_alias: str):
             return SimpleNamespace(account_identity=None, rate_limits=snapshots)
 
@@ -171,12 +192,9 @@ def test_build_default_manager_probe_returns_rate_limits_without_account_identit
             raise AssertionError("PTY fallback should not be used")
 
     monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
-    monkeypatch.setattr(
-        "codex_switch.cli.resolve_paths",
-        lambda: SimpleNamespace(accounts_dir=object(), state_file=object()),
-    )
-    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: object())
-    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: object())
+    monkeypatch.setattr("codex_switch.cli.resolve_paths", lambda: resolve_paths(tmp_path))
+    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: accounts)
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: ProbeStateStore(_path))
     monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
     monkeypatch.setattr("codex_switch.codex_login.run_codex_login", lambda _login_mode=LoginMode.BROWSER: None)
     monkeypatch.setattr("codex_switch.daemon_runtime.AppServerRpcSource", FakeRpcSource)
@@ -191,7 +209,7 @@ def test_build_default_manager_probe_returns_rate_limits_without_account_identit
     assert observation.rate_limits == tuple(snapshots)
 
 
-def test_build_default_manager_probe_wraps_pty_snapshot_in_rate_limits(monkeypatch):
+def test_build_default_manager_probe_wraps_pty_snapshot_in_rate_limits(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     snapshot = RateLimitSnapshot(
         alias="alpha",
@@ -205,27 +223,30 @@ def test_build_default_manager_probe_wraps_pty_snapshot_in_rate_limits(monkeypat
         credits_unlimited=None,
         credits_balance=None,
         observed_at="2026-04-06T00:12:00Z",
-    )
+        )
 
     class FakeManager:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
     class FakeRpcSource:
+        def __init__(self, *args, **kwargs):
+            pass
+
         def poll(self, *, active_alias: str):
             raise AutomationSourceUnavailableError("rpc unavailable")
 
     class FakePtySource:
+        def __init__(self, *args, **kwargs):
+            pass
+
         def probe(self, *, alias: str, observed_at: str):
             return snapshot
 
     monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
-    monkeypatch.setattr(
-        "codex_switch.cli.resolve_paths",
-        lambda: SimpleNamespace(accounts_dir=object(), state_file=object()),
-    )
-    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: object())
-    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: object())
+    monkeypatch.setattr("codex_switch.cli.resolve_paths", lambda: resolve_paths(tmp_path))
+    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: ProbeAccounts(_path))
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: ProbeStateStore(_path))
     monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
     monkeypatch.setattr("codex_switch.codex_login.run_codex_login", lambda _login_mode=LoginMode.BROWSER: None)
     monkeypatch.setattr("codex_switch.daemon_runtime.AppServerRpcSource", FakeRpcSource)
@@ -240,7 +261,59 @@ def test_build_default_manager_probe_wraps_pty_snapshot_in_rate_limits(monkeypat
     assert observation.rate_limits == (snapshot,)
 
 
-def test_build_default_manager_probe_preserves_multiple_rpc_snapshots(monkeypatch):
+def test_build_default_manager_probe_reads_requested_alias_snapshot(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    read_snapshot_calls: list[str] = []
+
+    class FakeManager:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakeAccounts:
+        def __init__(self, _path):
+            pass
+
+        def read_snapshot(self, alias: str) -> bytes:
+            read_snapshot_calls.append(alias)
+            return f'{{"alias":"{alias}"}}'.encode()
+
+    class FakeRpcSource:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def poll(self, *, active_alias: str):
+            return SimpleNamespace(
+                account_identity=SimpleNamespace(
+                    email=f"{active_alias}@example.com",
+                    plan_type="team",
+                    fingerprint=f"fp-{active_alias}",
+                    observed_at="2026-04-06T00:00:00Z",
+                ),
+                rate_limits=[],
+            )
+
+    class FakePtySource:
+        def probe(self, *, alias: str, observed_at: str):
+            raise AssertionError("PTY fallback should not be used")
+
+    monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
+    monkeypatch.setattr("codex_switch.cli.resolve_paths", lambda: resolve_paths(tmp_path))
+    monkeypatch.setattr("codex_switch.cli.AccountStore", FakeAccounts)
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: ProbeStateStore(_path))
+    monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
+    monkeypatch.setattr("codex_switch.codex_login.run_codex_login", lambda _login_mode=LoginMode.BROWSER: None)
+    monkeypatch.setattr("codex_switch.daemon_runtime.AppServerRpcSource", FakeRpcSource)
+    monkeypatch.setattr("codex_switch.daemon_runtime.CodexCliPtySource", FakePtySource)
+
+    build_default_manager()
+
+    observation = captured["alias_metadata_probe"]("alpha")
+
+    assert observation is not None
+    assert read_snapshot_calls == ["alpha"]
+
+
+def test_build_default_manager_probe_preserves_multiple_rpc_snapshots(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     snapshots = [
         RateLimitSnapshot(
@@ -270,12 +343,16 @@ def test_build_default_manager_probe_preserves_multiple_rpc_snapshots(monkeypatc
             observed_at="2026-04-06T00:01:00Z",
         ),
     ]
+    accounts = ProbeAccounts(object())
 
     class FakeManager:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
     class FakeRpcSource:
+        def __init__(self, *args, **kwargs):
+            pass
+
         def poll(self, *, active_alias: str):
             return SimpleNamespace(account_identity=None, rate_limits=snapshots)
 
@@ -284,12 +361,9 @@ def test_build_default_manager_probe_preserves_multiple_rpc_snapshots(monkeypatc
             raise AssertionError("PTY fallback should not be used")
 
     monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
-    monkeypatch.setattr(
-        "codex_switch.cli.resolve_paths",
-        lambda: SimpleNamespace(accounts_dir=object(), state_file=object()),
-    )
-    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: object())
-    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: object())
+    monkeypatch.setattr("codex_switch.cli.resolve_paths", lambda: resolve_paths(tmp_path))
+    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: accounts)
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: ProbeStateStore(_path))
     monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
     monkeypatch.setattr("codex_switch.codex_login.run_codex_login", lambda _login_mode=LoginMode.BROWSER: None)
     monkeypatch.setattr("codex_switch.daemon_runtime.AppServerRpcSource", FakeRpcSource)

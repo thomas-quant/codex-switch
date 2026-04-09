@@ -240,7 +240,7 @@ class CodexRpcClient:
     _buffered_messages: list[RpcMessage] = field(default_factory=list)
 
     @classmethod
-    def launch_default(cls) -> CodexRpcClient:
+    def launch_default(cls, *, env: Mapping[str, str] | None = None) -> CodexRpcClient:
         try:
             process = subprocess.Popen(
                 list(_DEFAULT_APP_SERVER_COMMAND),
@@ -248,10 +248,21 @@ class CodexRpcClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=dict(env) if env is not None else None,
             )
         except OSError as exc:
             raise AutomationSourceUnavailableError(_SOURCE_UNAVAILABLE_MESSAGE) from exc
         return cls(process=process)
+
+    def close(self) -> None:
+        if self.process.poll() is not None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=5)
 
     def send_request(self, request_id: int, method: str, params: Any) -> RpcMessage:
         if self.process.stdin is None or self.process.stdout is None:

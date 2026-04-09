@@ -33,6 +33,8 @@ from codex_switch.models import (
 )
 from codex_switch.state import StateStore
 
+_FRESH_TELEMETRY_SECONDS = 15 * 60
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -128,18 +130,19 @@ class CodexSwitchManager:
         for alias in aliases:
             alias_metadata = metadata.get(alias)
             rate_limit = latest_rate_limits.get(alias)
+            display_rate_limit = rate_limit if _is_fresh_rate_limit(rate_limit) else None
             plan_type = None if alias_metadata is None else _normalize_plan_type(alias_metadata.account_plan_type)
-            if plan_type is None and rate_limit is not None:
-                plan_type = _normalize_plan_type(rate_limit.plan_type)
+            if plan_type is None and display_rate_limit is not None:
+                plan_type = _normalize_plan_type(display_rate_limit.plan_type)
             entries.append(
                 AliasListEntry(
                     alias=alias,
                     plan_type=plan_type,
                     five_hour_left_percent=_remaining_percent(
-                        None if rate_limit is None else rate_limit.primary_used_percent
+                        None if display_rate_limit is None else display_rate_limit.primary_used_percent
                     ),
                     weekly_left_percent=_remaining_percent(
-                        None if rate_limit is None else rate_limit.secondary_used_percent
+                        None if display_rate_limit is None else display_rate_limit.secondary_used_percent
                     ),
                 ),
             )
@@ -197,11 +200,12 @@ class CodexSwitchManager:
         if self._alias_metadata_probe is None:
             return None
 
-        if alias == previous_state.active_alias:
-            try:
-                return self._alias_metadata_probe(alias)
-            except Exception:
-                return None
+        try:
+            observation = self._alias_metadata_probe(alias)
+        except Exception:
+            observation = None
+        if observation is not None or alias == previous_state.active_alias:
+            return observation
 
         try:
             self._ensure_safe_to_mutate()
@@ -594,3 +598,24 @@ def _choose_display_rate_limit(rows: list[RateLimitRecord]) -> RateLimitRecord |
         if row.primary_used_percent is not None and row.secondary_used_percent is not None:
             return row
     return newest_rows[0]
+
+
+def _is_fresh_rate_limit(
+    record: RateLimitRecord | None,
+    *,
+    max_age_seconds: int = _FRESH_TELEMETRY_SECONDS,
+) -> bool:
+    if record is None:
+        return False
+    try:
+        observed_at = _parse_iso(record.observed_at)
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - observed_at).total_seconds() <= max_age_seconds
+
+
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed

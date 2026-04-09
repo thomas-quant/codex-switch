@@ -10,11 +10,15 @@ The tool is intentionally narrow:
 
 ## Install
 
+For normal CLI use, install with `pipx` so `codex-switch` and `codex-switchd` are on your `PATH` without activating a virtual environment:
+
 ```bash
-python3 -m pip install -e '.[dev]'
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+python3 -m pipx install --editable .
 ```
 
-If your system Python is PEP 668-managed, use a local virtual environment instead:
+If you are developing on the repository and want the traditional editable environment with test dependencies, use a local virtual environment instead:
 
 ```bash
 python3 -m venv .venv
