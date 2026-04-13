@@ -135,6 +135,45 @@ def test_remove_rejects_when_codex_is_running_and_snapshot_matches_live_auth(tmp
     assert accounts.exists("backup")
 
 
+def test_remove_rejects_when_codex_is_running_and_live_auth_is_missing(tmp_path, monkeypatch):
+    manager, _paths, accounts, state, _guard = make_manager(tmp_path)
+    accounts.write_snapshot_from_bytes("work", b'{"token":"snapshot-work"}')
+    accounts.write_snapshot_from_bytes("backup", b'{"token":"snapshot-backup"}')
+    state.save(AppState(active_alias="work", updated_at="2026-03-31T12:00:00Z"))
+
+    monkeypatch.setattr(manager, "_is_codex_running", lambda: True, raising=False)
+
+    with pytest.raises(UnsafeAliasRemovalError, match="Could not identify the live Codex account"):
+        manager.remove("backup")
+
+    assert accounts.exists("backup")
+
+
+def test_remove_rejects_when_codex_is_running_and_identity_matches_with_different_bytes(
+    tmp_path,
+    monkeypatch,
+):
+    manager, paths, accounts, state, _guard = make_manager(tmp_path)
+    accounts.write_snapshot_from_bytes("work", b'{"token":"snapshot-work"}')
+    accounts.write_snapshot_from_bytes("backup", b'{"token":"snapshot-backup"}')
+    state.save(AppState(active_alias="work", updated_at="2026-03-31T12:00:00Z"))
+    paths.live_auth_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.live_auth_file.write_bytes(b'{"token":"live-work"}')
+
+    monkeypatch.setattr(manager, "_is_codex_running", lambda: True, raising=False)
+    monkeypatch.setattr(
+        manager,
+        "_identity_from_auth_bytes",
+        lambda _auth_bytes: ("fp-same", "same@example.com"),
+        raising=False,
+    )
+
+    with pytest.raises(UnsafeAliasRemovalError, match="live Codex account"):
+        manager.remove("backup")
+
+    assert accounts.exists("backup")
+
+
 def test_remove_rejects_when_codex_is_running_and_live_identity_is_unknown(tmp_path, monkeypatch):
     manager, paths, accounts, state, _guard = make_manager(tmp_path)
     accounts.write_snapshot_from_bytes("work", b'{"token":"snapshot-work"}')
