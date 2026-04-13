@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from pathlib import Path
 
 from codex_switch.automation_db import SwitchEventRecord
 from codex_switch.accounts import AccountStore
@@ -64,7 +65,13 @@ def build_default_manager() -> CodexSwitchManager:
 
     def probe_alias_metadata(alias: str):
         auth_bytes = _load_probe_auth_bytes(alias=alias, accounts=accounts, paths=paths, state=state)
-        return probe_alias_metadata_from_auth_bytes(alias=alias, auth_bytes=auth_bytes)
+        observation, refreshed_auth_bytes = _probe_alias_metadata_from_auth_bytes_with_refreshed_auth(
+            alias=alias,
+            auth_bytes=auth_bytes,
+        )
+        if refreshed_auth_bytes is not None:
+            accounts.write_snapshot_from_bytes(alias, refreshed_auth_bytes)
+        return observation
 
     def identity_from_auth_bytes(auth_bytes: bytes) -> tuple[str | None, str | None] | None:
         observation = probe_alias_metadata_from_auth_bytes(alias="live", auth_bytes=auth_bytes)
@@ -94,11 +101,24 @@ def probe_alias_metadata_from_auth_bytes(
     alias: str,
     auth_bytes: bytes,
 ) -> AliasTelemetryObservation | None:
+    observation, _refreshed_auth_bytes = _probe_alias_metadata_from_auth_bytes_with_refreshed_auth(
+        alias=alias,
+        auth_bytes=auth_bytes,
+    )
+    return observation
+
+
+def _probe_alias_metadata_from_auth_bytes_with_refreshed_auth(
+    *,
+    alias: str,
+    auth_bytes: bytes,
+) -> tuple[AliasTelemetryObservation | None, bytes | None]:
     from codex_switch.daemon_runtime import AppServerRpcSource, CodexCliPtySource
     from codex_switch.errors import AutomationSourceUnavailableError
     from codex_switch.manager import utc_now
 
     with isolated_codex_env(auth_bytes) as env:
+        auth_file = Path(env["CODEX_HOME"]) / "auth.json"
         rpc_source = AppServerRpcSource(
             client_factory=lambda: CodexRpcClient.launch_default(env=env)
         )
@@ -108,14 +128,14 @@ def probe_alias_metadata_from_auth_bytes(
             observed_at = utc_now()
             snapshot = CodexCliPtySource(env=env).probe(alias=alias, observed_at=observed_at)
             if snapshot is None:
-                return None
+                return None, _load_refreshed_auth_bytes(auth_file=auth_file, original_auth_bytes=auth_bytes)
             return AliasTelemetryObservation(
                 account_email=None,
                 account_plan_type=snapshot.plan_type,
                 account_fingerprint=None,
                 observed_at=snapshot.observed_at,
                 rate_limits=(snapshot,),
-            )
+            ), _load_refreshed_auth_bytes(auth_file=auth_file, original_auth_bytes=auth_bytes)
         finally:
             client = getattr(rpc_source, "_client", None)
             close = None if client is None else getattr(client, "close", None)
@@ -132,14 +152,23 @@ def probe_alias_metadata_from_auth_bytes(
                 observed_at = snapshot.observed_at
                 break
     if plan_type is None and account_identity is None and not poll.rate_limits:
-        return None
+        return None, _load_refreshed_auth_bytes(auth_file=auth_file, original_auth_bytes=auth_bytes)
     return AliasTelemetryObservation(
         account_email=None if account_identity is None else account_identity.email,
         account_plan_type=plan_type,
         account_fingerprint=None if account_identity is None else account_identity.fingerprint,
         observed_at=observed_at if observed_at is not None else utc_now(),
         rate_limits=tuple(poll.rate_limits),
-    )
+    ), _load_refreshed_auth_bytes(auth_file=auth_file, original_auth_bytes=auth_bytes)
+
+
+def _load_refreshed_auth_bytes(*, auth_file: Path, original_auth_bytes: bytes) -> bytes | None:
+    if not auth_file.exists():
+        return None
+    refreshed_auth_bytes = auth_file.read_bytes()
+    if refreshed_auth_bytes == original_auth_bytes:
+        return None
+    return refreshed_auth_bytes
 
 
 def _load_probe_auth_bytes(

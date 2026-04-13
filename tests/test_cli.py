@@ -380,6 +380,45 @@ def test_build_default_manager_probe_reads_requested_alias_snapshot(monkeypatch,
     assert read_snapshot_calls == ["alpha"]
 
 
+def test_build_default_manager_probe_persists_refreshed_auth_snapshot(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    snapshot_writes: list[tuple[str, bytes]] = []
+    observation = object()
+
+    class FakeManager:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakeAccounts:
+        def __init__(self, _path):
+            pass
+
+        def read_snapshot(self, alias: str) -> bytes:
+            return f'{{"alias":"{alias}"}}'.encode()
+
+        def write_snapshot_from_bytes(self, alias: str, payload: bytes) -> None:
+            snapshot_writes.append((alias, payload))
+
+    monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
+    monkeypatch.setattr("codex_switch.cli.resolve_paths", lambda: resolve_paths(tmp_path))
+    monkeypatch.setattr("codex_switch.cli.AccountStore", FakeAccounts)
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: ProbeStateStore(_path))
+    monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
+    monkeypatch.setattr("codex_switch.process_guard.is_codex_running", lambda: False)
+    monkeypatch.setattr("codex_switch.codex_login.run_codex_login", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "codex_switch.cli._probe_alias_metadata_from_auth_bytes_with_refreshed_auth",
+        lambda *, alias, auth_bytes: (observation, b'{"rotated":true}'),
+    )
+
+    build_default_manager()
+
+    probe = captured["alias_metadata_probe"]
+
+    assert probe("alpha") is observation
+    assert snapshot_writes == [("alpha", b'{"rotated":true}')]
+
+
 def test_build_default_manager_probe_preserves_multiple_rpc_snapshots(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     snapshots = [
