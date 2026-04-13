@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from codex_switch.fs import atomic_write_bytes
+from codex_switch.fs import atomic_write_bytes, ensure_private_dir
 
 
 @contextmanager
@@ -14,6 +14,7 @@ def isolated_codex_env(auth_bytes: bytes | None = None) -> Iterator[dict[str, st
     with tempfile.TemporaryDirectory(prefix="codex-switch-isolated-") as raw_home:
         home = Path(raw_home)
         codex_root = home / ".codex"
+        ensure_private_dir(codex_root, root=home)
         if auth_bytes is not None:
             atomic_write_bytes(
                 codex_root / "auth.json",
