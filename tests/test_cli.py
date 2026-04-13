@@ -128,6 +128,53 @@ def test_build_default_manager_threads_login_mode_through_runner(monkeypatch):
     assert callable(captured["alias_metadata_probe"])
 
 
+def test_build_default_manager_provides_identity_probe_from_auth_bytes(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    class FakeManager:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakeRpcSource:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def poll(self, *, active_alias: str):
+            return SimpleNamespace(
+                account_identity=SimpleNamespace(
+                    email="live@example.com",
+                    plan_type="plus",
+                    fingerprint="fp-live",
+                    observed_at="2026-04-13T10:00:00Z",
+                ),
+                rate_limits=[],
+            )
+
+    class FakePtySource:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def probe(self, *, alias: str, observed_at: str):
+            raise AssertionError("PTY fallback should not be used")
+
+    monkeypatch.setattr("codex_switch.cli.CodexSwitchManager", FakeManager)
+    monkeypatch.setattr("codex_switch.cli.resolve_paths", lambda: resolve_paths(tmp_path))
+    monkeypatch.setattr("codex_switch.cli.AccountStore", lambda _path: ProbeAccounts(_path))
+    monkeypatch.setattr("codex_switch.cli.StateStore", lambda _path: ProbeStateStore(_path))
+    monkeypatch.setattr("codex_switch.process_guard.ensure_codex_not_running", lambda: None)
+    monkeypatch.setattr("codex_switch.process_guard.is_codex_running", lambda: False)
+    monkeypatch.setattr("codex_switch.codex_login.run_codex_login", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("codex_switch.daemon_runtime.AppServerRpcSource", FakeRpcSource)
+    monkeypatch.setattr("codex_switch.daemon_runtime.CodexCliPtySource", FakePtySource)
+
+    build_default_manager()
+
+    identity_probe = captured["identity_from_auth_bytes"]
+    assert callable(identity_probe)
+    assert callable(captured["is_codex_running"])
+    assert identity_probe(b'{"token":"live"}') == ("fp-live", "live@example.com")
+
+
 def test_build_default_manager_uses_fresh_rpc_source_per_alias_probe(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     rpc_instances: list[int] = []
@@ -624,11 +671,17 @@ def test_format_auto_source_and_history_lines():
 
 
 def test_main_dispatches_add(monkeypatch, capsys):
-    calls: list[tuple[str, str | None]] = []
+    calls: list[tuple[str, str | None, LoginMode, bool]] = []
 
     class FakeManager:
-        def add(self, alias: str) -> None:
-            calls.append(("add", alias))
+        def add(
+            self,
+            alias: str,
+            login_mode: LoginMode = LoginMode.BROWSER,
+            *,
+            isolated: bool = False,
+        ) -> None:
+            calls.append(("add", alias, login_mode, isolated))
 
     monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
 
@@ -636,16 +689,22 @@ def test_main_dispatches_add(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert result == 0
-    assert calls == [("add", "work")]
+    assert calls == [("add", "work", LoginMode.BROWSER, False)]
     assert captured.out == "added alias: work\n"
 
 
 def test_main_dispatches_add_device_auth(monkeypatch, capsys):
-    calls: list[tuple[str, str, LoginMode]] = []
+    calls: list[tuple[str, str, LoginMode, bool]] = []
 
     class FakeManager:
-        def add(self, alias: str, login_mode: LoginMode = LoginMode.BROWSER) -> None:
-            calls.append(("add", alias, login_mode))
+        def add(
+            self,
+            alias: str,
+            login_mode: LoginMode = LoginMode.BROWSER,
+            *,
+            isolated: bool = False,
+        ) -> None:
+            calls.append(("add", alias, login_mode, isolated))
 
     monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())
 
@@ -653,7 +712,7 @@ def test_main_dispatches_add_device_auth(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert result == 0
-    assert calls == [("add", "work", LoginMode.DEVICE_AUTH)]
+    assert calls == [("add", "work", LoginMode.DEVICE_AUTH, False)]
     assert captured.out == "added alias: work\n"
 
 
@@ -966,7 +1025,13 @@ def test_main_dispatches_auto_commands(monkeypatch, capsys):
 
 def test_main_exits_via_parser_for_user_facing_errors(monkeypatch):
     class FakeManager:
-        def add(self, alias: str) -> None:
+        def add(
+            self,
+            alias: str,
+            login_mode: LoginMode = LoginMode.BROWSER,
+            *,
+            isolated: bool = False,
+        ) -> None:
             raise CodexSwitchError(f"bad alias: {alias}")
 
     monkeypatch.setattr("codex_switch.cli.build_default_manager", lambda: FakeManager())

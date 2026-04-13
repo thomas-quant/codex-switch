@@ -56,10 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_default_manager() -> CodexSwitchManager:
     from codex_switch.codex_login import run_codex_login
-    from codex_switch.daemon_runtime import AppServerRpcSource, CodexCliPtySource
-    from codex_switch.errors import AutomationSourceUnavailableError
-    from codex_switch.manager import utc_now
-    from codex_switch.process_guard import ensure_codex_not_running
+    from codex_switch.process_guard import ensure_codex_not_running, is_codex_running
 
     paths = resolve_paths()
     accounts = AccountStore(paths.accounts_dir)
@@ -67,47 +64,17 @@ def build_default_manager() -> CodexSwitchManager:
 
     def probe_alias_metadata(alias: str):
         auth_bytes = _load_probe_auth_bytes(alias=alias, accounts=accounts, paths=paths, state=state)
-        with isolated_codex_env(auth_bytes) as env:
-            rpc_source = AppServerRpcSource(
-                client_factory=lambda: CodexRpcClient.launch_default(env=env)
-            )
-            try:
-                poll = rpc_source.poll(active_alias=alias)
-            except AutomationSourceUnavailableError:
-                observed_at = utc_now()
-                snapshot = CodexCliPtySource(env=env).probe(alias=alias, observed_at=observed_at)
-                if snapshot is None:
-                    return None
-                return AliasTelemetryObservation(
-                    account_email=None,
-                    account_plan_type=snapshot.plan_type,
-                    account_fingerprint=None,
-                    observed_at=snapshot.observed_at,
-                    rate_limits=(snapshot,),
-                )
-            finally:
-                client = getattr(rpc_source, "_client", None)
-                close = None if client is None else getattr(client, "close", None)
-                if callable(close):
-                    close()
+        return probe_alias_metadata_from_auth_bytes(alias=alias, auth_bytes=auth_bytes)
 
-        account_identity = poll.account_identity
-        plan_type = None if account_identity is None else account_identity.plan_type
-        observed_at = None if account_identity is None else account_identity.observed_at
-        if plan_type is None:
-            for snapshot in poll.rate_limits:
-                if snapshot.plan_type is not None:
-                    plan_type = snapshot.plan_type
-                    observed_at = snapshot.observed_at
-                    break
-        if plan_type is None and account_identity is None and not poll.rate_limits:
+    def identity_from_auth_bytes(auth_bytes: bytes) -> tuple[str | None, str | None] | None:
+        observation = probe_alias_metadata_from_auth_bytes(alias="live", auth_bytes=auth_bytes)
+        if observation is None:
             return None
-        return AliasTelemetryObservation(
-            account_email=None if account_identity is None else account_identity.email,
-            account_plan_type=plan_type,
-            account_fingerprint=None if account_identity is None else account_identity.fingerprint,
-            observed_at=observed_at if observed_at is not None else utc_now(),
-            rate_limits=tuple(poll.rate_limits),
+        if observation.account_fingerprint is None and observation.account_email is None:
+            return None
+        return (
+            observation.account_fingerprint,
+            observation.account_email,
         )
 
     return CodexSwitchManager(
@@ -115,8 +82,63 @@ def build_default_manager() -> CodexSwitchManager:
         accounts=accounts,
         state=state,
         ensure_safe_to_mutate=ensure_codex_not_running,
+        is_codex_running=is_codex_running,
         login_runner=run_codex_login,
         alias_metadata_probe=probe_alias_metadata,
+        identity_from_auth_bytes=identity_from_auth_bytes,
+    )
+
+
+def probe_alias_metadata_from_auth_bytes(
+    *,
+    alias: str,
+    auth_bytes: bytes,
+) -> AliasTelemetryObservation | None:
+    from codex_switch.daemon_runtime import AppServerRpcSource, CodexCliPtySource
+    from codex_switch.errors import AutomationSourceUnavailableError
+    from codex_switch.manager import utc_now
+
+    with isolated_codex_env(auth_bytes) as env:
+        rpc_source = AppServerRpcSource(
+            client_factory=lambda: CodexRpcClient.launch_default(env=env)
+        )
+        try:
+            poll = rpc_source.poll(active_alias=alias)
+        except AutomationSourceUnavailableError:
+            observed_at = utc_now()
+            snapshot = CodexCliPtySource(env=env).probe(alias=alias, observed_at=observed_at)
+            if snapshot is None:
+                return None
+            return AliasTelemetryObservation(
+                account_email=None,
+                account_plan_type=snapshot.plan_type,
+                account_fingerprint=None,
+                observed_at=snapshot.observed_at,
+                rate_limits=(snapshot,),
+            )
+        finally:
+            client = getattr(rpc_source, "_client", None)
+            close = None if client is None else getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    account_identity = poll.account_identity
+    plan_type = None if account_identity is None else account_identity.plan_type
+    observed_at = None if account_identity is None else account_identity.observed_at
+    if plan_type is None:
+        for snapshot in poll.rate_limits:
+            if snapshot.plan_type is not None:
+                plan_type = snapshot.plan_type
+                observed_at = snapshot.observed_at
+                break
+    if plan_type is None and account_identity is None and not poll.rate_limits:
+        return None
+    return AliasTelemetryObservation(
+        account_email=None if account_identity is None else account_identity.email,
+        account_plan_type=plan_type,
+        account_fingerprint=None if account_identity is None else account_identity.fingerprint,
+        observed_at=observed_at if observed_at is not None else utc_now(),
+        rate_limits=tuple(poll.rate_limits),
     )
 
 
