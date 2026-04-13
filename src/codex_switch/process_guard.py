@@ -13,7 +13,7 @@ _CODEX_PROCESS_MESSAGE = (
 )
 
 
-def ensure_codex_not_running() -> None:
+def is_codex_running() -> bool:
     current_pid = os.getpid()
     current_user = getpass.getuser()
 
@@ -29,7 +29,13 @@ def ensure_codex_not_running() -> None:
         if _is_codex_process(info.get("name")) or _is_codex_process_from_cmdline(
             info.get("cmdline")
         ):
-            raise CodexProcessRunningError(_CODEX_PROCESS_MESSAGE)
+            return True
+    return False
+
+
+def ensure_codex_not_running() -> None:
+    if is_codex_running():
+        raise CodexProcessRunningError(_CODEX_PROCESS_MESSAGE)
 
 
 def _is_codex_process(name: object) -> bool:
